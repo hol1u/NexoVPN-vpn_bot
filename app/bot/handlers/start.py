@@ -115,7 +115,7 @@ def build_subscription_gate_menu() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="📰 Подписаться на NexoVPN News",
+                    text="⚡ Подписаться на канал",
                     url=REQUIRED_CHANNEL_URL,
                 )
             ],
@@ -917,9 +917,17 @@ async def invite_handler(
         )
         return
 
-    bot_username = (
-        callback.bot.username
-    )
+    bot_username = callback.bot.username
+
+    if not bot_username:
+        try:
+            me = await callback.bot.get_me()
+            bot_username = me.username
+        except Exception:
+            logger.exception(
+                "Не удалось получить username бота для referral-ссылки"
+            )
+            bot_username = None
 
     if not bot_username:
         await callback.answer(
@@ -944,8 +952,6 @@ async def invite_handler(
         "Отправь ссылку друзьям — "
         "пусть запускают бота по ней."
     )
-
-    await callback.answer()
 
     await edit_menu(
         callback,
