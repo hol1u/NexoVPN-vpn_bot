@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from pathlib import Path
+from typing import Any
 
 import asyncpg
 
@@ -146,3 +147,54 @@ async def add_user_balance(telegram_id: int, amount_kopecks: int) -> None:
             amount_kopecks,
             telegram_id,
         )
+
+
+PLAN_COLUMNS = """
+    id, code, type, duration_days, price_kopecks,
+    device_limit, is_active, created_at
+"""
+
+
+async def _get_active_plans(plan_type: str) -> list[dict[str, Any]]:
+    async with _get_pool().acquire() as connection:
+        rows = await connection.fetch(
+            f"""
+            SELECT {PLAN_COLUMNS}
+            FROM plans
+            WHERE type = $1 AND is_active = TRUE
+            ORDER BY duration_days
+            """,
+            plan_type,
+        )
+
+    return [dict(row) for row in rows]
+
+
+async def get_active_single_plans() -> list[dict[str, Any]]:
+    """Активные обычные тарифы, от короткого срока к длинному."""
+    return await _get_active_plans("single")
+
+
+async def get_active_family_plans() -> list[dict[str, Any]]:
+    """Активные семейные тарифы, от короткого срока к длинному."""
+    return await _get_active_plans("family")
+
+
+async def get_plan_by_code(
+    code: str,
+    only_active: bool = True,
+) -> dict[str, Any] | None:
+    """Возвращает тариф по стабильному идентификатору (code) или None.
+
+    По умолчанию отключённые тарифы (is_active = FALSE) не возвращаются.
+    Цена всегда в копейках (int), без float.
+    """
+    query = f"SELECT {PLAN_COLUMNS} FROM plans WHERE code = $1"
+
+    if only_active:
+        query += " AND is_active = TRUE"
+
+    async with _get_pool().acquire() as connection:
+        row = await connection.fetchrow(query, code)
+
+    return dict(row) if row is not None else None
