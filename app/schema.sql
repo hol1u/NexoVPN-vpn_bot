@@ -1,4 +1,13 @@
 -- ============================================================
+-- NexoVPN — структура базы данных
+-- ============================================================
+-- Этот файл выполняется при каждом запуске бота.
+-- Все операции сделаны через IF NOT EXISTS / безопасные ALTER,
+-- поэтому существующие данные не удаляются.
+-- ============================================================
+
+
+-- ============================================================
 -- USERS
 -- ============================================================
 
@@ -7,41 +16,74 @@ CREATE TABLE IF NOT EXISTS users (
     telegram_id     BIGINT NOT NULL UNIQUE,
     username        TEXT,
     first_name      TEXT,
+
     is_blocked      BOOLEAN NOT NULL DEFAULT FALSE,
+
     balance_kopecks BIGINT NOT NULL DEFAULT 0,
 
     -- Реферальная система
-    referral_code   TEXT UNIQUE,
-    referred_by     BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    referral_code   TEXT,
+    referred_by     BIGINT,
     referred_at     TIMESTAMPTZ,
 
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 
--- Миграции для уже существующей таблицы users
+-- Добавляем поля в существующую таблицу users,
+-- если база была создана старой версией схемы.
 
 ALTER TABLE users
-ADD COLUMN IF NOT EXISTS balance_kopecks BIGINT NOT NULL DEFAULT 0;
+ADD COLUMN IF NOT EXISTS balance_kopecks
+BIGINT NOT NULL DEFAULT 0;
 
 ALTER TABLE users
-ADD COLUMN IF NOT EXISTS referral_code TEXT;
+ADD COLUMN IF NOT EXISTS referral_code
+TEXT;
 
 ALTER TABLE users
-ADD COLUMN IF NOT EXISTS referred_by BIGINT;
+ADD COLUMN IF NOT EXISTS referred_by
+BIGINT;
 
 ALTER TABLE users
-ADD COLUMN IF NOT EXISTS referred_at TIMESTAMPTZ;
+ADD COLUMN IF NOT EXISTS referred_at
+TIMESTAMPTZ;
 
 
--- Индексы / ограничения для реферальной системы
+-- Индекс для поиска реферального кода.
 
 CREATE UNIQUE INDEX IF NOT EXISTS users_referral_code_unique
 ON users (referral_code)
 WHERE referral_code IS NOT NULL;
 
+
+-- Индекс для подсчёта приглашённых пользователей.
+
 CREATE INDEX IF NOT EXISTS users_referred_by_idx
 ON users (referred_by);
+
+
+-- ============================================================
+-- ВОССТАНОВЛЕНИЕ REFERRAL CODE ДЛЯ СТАРЫХ ПОЛЬЗОВАТЕЛЕЙ
+-- ============================================================
+--
+-- Пользователи, которые зарегистрировались до появления
+-- реферальной системы, могли иметь referral_code = NULL.
+--
+-- Для них создаём стабильный уникальный код на основе
+-- Telegram ID.
+--
+-- Новые пользователи получают случайный код в db.py.
+--
+
+UPDATE users
+SET referral_code =
+    'nexo_' ||
+    SUBSTRING(
+        MD5(telegram_id::TEXT)
+        FROM 1 FOR 10
+    )
+WHERE referral_code IS NULL;
 
 
 -- ============================================================
@@ -50,17 +92,30 @@ ON users (referred_by);
 
 CREATE TABLE IF NOT EXISTS plans (
     id             BIGSERIAL PRIMARY KEY,
+
     code           TEXT NOT NULL UNIQUE,
-    type           TEXT NOT NULL CHECK (type IN ('single', 'family')),
-    duration_days  INTEGER NOT NULL CHECK (duration_days > 0),
-    price_kopecks  BIGINT NOT NULL CHECK (price_kopecks > 0),
-    device_limit   INTEGER NOT NULL CHECK (device_limit > 0),
+
+    type           TEXT NOT NULL
+                   CHECK (type IN ('single', 'family')),
+
+    duration_days  INTEGER NOT NULL
+                   CHECK (duration_days > 0),
+
+    price_kopecks  BIGINT NOT NULL
+                   CHECK (price_kopecks > 0),
+
+    device_limit   INTEGER NOT NULL
+                   CHECK (device_limit > 0),
+
     is_active      BOOLEAN NOT NULL DEFAULT TRUE,
+
     created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 
--- Начальные тарифы
+-- ============================================================
+-- ТАРИФЫ NexoVPN
+-- ============================================================
 
 INSERT INTO plans (
     code,
@@ -70,14 +125,74 @@ INSERT INTO plans (
     device_limit
 )
 VALUES
-    ('single_1m',  'single',  30,  16900, 1),
-    ('single_3m',  'single',  90,  42900, 1),
-    ('single_6m',  'single', 180,  74900, 1),
-    ('single_12m', 'single', 365, 109900, 1),
 
-    ('family_1m',  'family',  30,  36900, 5),
-    ('family_3m',  'family',  90,  94900, 5),
-    ('family_6m',  'family', 180, 164900, 5),
-    ('family_12m', 'family', 365, 259000, 5)
+    -- Обычная подписка: 1 устройство
+
+    (
+        'single_1m',
+        'single',
+        30,
+        16900,
+        1
+    ),
+
+    (
+        'single_3m',
+        'single',
+        90,
+        42900,
+        1
+    ),
+
+    (
+        'single_6m',
+        'single',
+        180,
+        74900,
+        1
+    ),
+
+    (
+        'single_12m',
+        'single',
+        365,
+        109900,
+        1
+    ),
+
+
+    -- Family: до 5 устройств
+
+    (
+        'family_1m',
+        'family',
+        30,
+        36900,
+        5
+    ),
+
+    (
+        'family_3m',
+        'family',
+        90,
+        94900,
+        5
+    ),
+
+    (
+        'family_6m',
+        'family',
+        180,
+        164900,
+        5
+    ),
+
+    (
+        'family_12m',
+        'family',
+        365,
+        259000,
+        5
+    )
 
 ON CONFLICT (code) DO NOTHING;
