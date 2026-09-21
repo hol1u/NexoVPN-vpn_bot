@@ -16,10 +16,6 @@ SCHEMA_LOCK_ID = 727001
 _pool: asyncpg.Pool | None = None
 
 
-# ============================================================
-# DATABASE CORE
-# ============================================================
-
 def _get_pool() -> asyncpg.Pool:
     if _pool is None:
         raise RuntimeError(
@@ -94,7 +90,7 @@ async def check_db() -> bool:
         return False
 
     try:
-        async with _get_pool().acquire() as connection:
+        async with _pool.acquire() as connection:
             await connection.fetchval(
                 "SELECT 1"
             )
@@ -113,14 +109,12 @@ async def _generate_unique_referral_code(
     connection: asyncpg.Connection,
 ) -> str:
     """
-    Генерирует уникальный referral-код пользователя.
-
-    Пример:
-        ref_X7kP2mQa
+    Создаёт короткий случайный referral-код.
+    Например: X7kP2mQa.
     """
 
-    for _ in range(30):
-        code = "ref_" + secrets.token_urlsafe(6)
+    for _ in range(20):
+        code = secrets.token_urlsafe(6)
 
         exists = await connection.fetchval(
             """
@@ -139,47 +133,6 @@ async def _generate_unique_referral_code(
     )
 
 
-async def _ensure_referral_code(
-    connection: asyncpg.Connection,
-    user_id: int,
-) -> str:
-    """
-    Проверяет наличие referral-кода у пользователя.
-
-    Если код уже существует — возвращает его.
-
-    Если код отсутствует — создаёт новый.
-    """
-
-    existing = await connection.fetchval(
-        """
-        SELECT referral_code
-        FROM users
-        WHERE id = $1
-        """,
-        user_id,
-    )
-
-    if existing:
-        return str(existing)
-
-    code = await _generate_unique_referral_code(
-        connection
-    )
-
-    await connection.execute(
-        """
-        UPDATE users
-        SET referral_code = $1
-        WHERE id = $2
-        """,
-        code,
-        user_id,
-    )
-
-    return code
-
-
 async def register_user(
     telegram_id: int,
     username: str | None,
@@ -187,28 +140,21 @@ async def register_user(
     referral_code: str | None = None,
 ) -> None:
     """
-    Создаёт пользователя или обновляет существующего.
+    Создаёт пользователя при первом запуске.
 
-    При первой регистрации:
-    - создаётся уникальный referral-код;
-    - при наличии корректного referral_code
-      пользователь привязывается к пригласившему;
-    - сам себя пригласить нельзя;
-    - referred_at записывается автоматически.
-
-    При повторном /start:
+    Если пользователь уже существует:
     - username обновляется;
     - first_name обновляется;
-    - существующий реферер НЕ изменяется;
-    - отсутствующий referral-код восстанавливается.
+    - существующий referral не меняется.
+
+    Если пользователь новый и referral_code корректный,
+    он получает referred_by от пригласившего пользователя.
+
+    Сам себя пригласить нельзя.
     """
 
     async with _get_pool().acquire() as connection:
         async with connection.transaction():
-
-            # ------------------------------------------------
-            # Проверяем, существует ли пользователь
-            # ------------------------------------------------
 
             existing = await connection.fetchrow(
                 """
@@ -217,14 +163,9 @@ async def register_user(
                     referred_by
                 FROM users
                 WHERE telegram_id = $1
-                FOR UPDATE
                 """,
                 telegram_id,
             )
-
-            # ------------------------------------------------
-            # Пользователь уже существует
-            # ------------------------------------------------
 
             if existing is not None:
                 await connection.execute(
@@ -239,58 +180,7 @@ async def register_user(
                     telegram_id,
                 )
 
-                # На случай старых пользователей,
-                # у которых referral_code ещё отсутствует.
-                await _ensure_referral_code(
-                    connection,
-                    int(existing["id"]),
-                )
-
-                # Важно:
-                # referral существующего пользователя
-                # здесь намеренно НЕ изменяется.
-
                 return
-
-            # ------------------------------------------------
-            # Новый пользователь
-            # ------------------------------------------------
-
-            referred_by = None
-
-            clean_referral_code = (
-                referral_code.strip()
-                if referral_code
-                else None
-            )
-
-            # ------------------------------------------------
-            # Проверяем referral-код пригласившего
-            # ------------------------------------------------
-
-            if clean_referral_code:
-                referrer = await connection.fetchrow(
-                    """
-                    SELECT
-                        id,
-                        telegram_id
-                    FROM users
-                    WHERE referral_code = $1
-                    """,
-                    clean_referral_code,
-                )
-
-                if (
-                    referrer is not None
-                    and int(referrer["telegram_id"]) != telegram_id
-                ):
-                    referred_by = int(
-                        referrer["id"]
-                    )
-
-            # ------------------------------------------------
-            # Создаём собственный referral-код
-            # ------------------------------------------------
 
             new_referral_code = (
                 await _generate_unique_referral_code(
@@ -298,23 +188,30 @@ async def register_user(
                 )
             )
 
-            # ------------------------------------------------
-            # Создаём пользователя
-            # ------------------------------------------------
-            #
-            # ВАЖНО:
-            # $5 имеет явный тип BIGINT.
-            #
-            # Без ::BIGINT PostgreSQL не может определить
-            # тип параметра в конструкции:
-            #
-            #     WHEN $5 IS NOT NULL
-            #
-            # и возникает:
-            #
-            #     asyncpg.exceptions.AmbiguousParameterError
-            #
-            # ------------------------------------------------
+            referred_by = None
+
+            if referral_code:
+                clean_referral_code = referral_code.strip()
+                if clean_referral_code.startswith("ref_"):
+                    clean_referral_code = clean_referral_code[4:]
+
+                referrer = await connection.fetchrow(
+                    """
+                    SELECT id, telegram_id
+                    FROM users
+                    WHERE referral_code = $1
+                       OR referral_code = $2
+                    LIMIT 1
+                    """,
+                    clean_referral_code,
+                    "ref_" + clean_referral_code,
+                )
+
+                if (
+                    referrer is not None
+                    and int(referrer["telegram_id"]) != telegram_id
+                ):
+                    referred_by = referrer["id"]
 
             await connection.execute(
                 """
@@ -333,8 +230,7 @@ async def register_user(
                     $4,
                     $5,
                     CASE
-                        WHEN $5::BIGINT IS NOT NULL
-                        THEN NOW()
+                        WHEN $5::BIGINT IS NOT NULL THEN NOW()
                         ELSE NULL
                     END
                 )
@@ -353,10 +249,9 @@ async def upsert_user(
     first_name: str | None,
 ) -> None:
     """
-    Совместимость со старыми обработчиками.
+    Совместимость со старым кодом.
 
-    Создаёт пользователя либо обновляет
-    username / first_name.
+    Нового пользователя создаёт без referral-кода.
     """
 
     await register_user(
@@ -369,16 +264,10 @@ async def upsert_user(
 
 async def count_users() -> int:
     async with _get_pool().acquire() as connection:
-        result = await connection.fetchval(
+        return await connection.fetchval(
             "SELECT COUNT(*) FROM users"
         )
 
-    return int(result or 0)
-
-
-# ============================================================
-# BALANCE
-# ============================================================
 
 async def get_user_balance(
     telegram_id: int,
@@ -393,7 +282,10 @@ async def get_user_balance(
             telegram_id,
         )
 
-    return int(balance or 0)
+    if balance is None:
+        return 0
+
+    return int(balance)
 
 
 async def add_user_balance(
@@ -425,44 +317,35 @@ async def add_user_balance(
 async def get_user_referral_code(
     telegram_id: int,
 ) -> str | None:
-    """
-    Возвращает referral-код пользователя.
-
-    Если пользователь существует, но код отсутствует,
-    код создаётся автоматически.
-    """
-
     async with _get_pool().acquire() as connection:
         async with connection.transaction():
-
-            user_id = await connection.fetchval(
+            row = await connection.fetchrow(
                 """
-                SELECT id
+                SELECT id, referral_code
                 FROM users
                 WHERE telegram_id = $1
+                FOR UPDATE
                 """,
                 telegram_id,
             )
 
-            if user_id is None:
+            if row is None:
                 return None
+
+            if row["referral_code"]:
+                return str(row["referral_code"])
 
             return await _ensure_referral_code(
                 connection,
-                int(user_id),
+                int(row["id"]),
             )
 
 
 async def count_referrals(
     telegram_id: int,
 ) -> int:
-    """
-    Количество пользователей,
-    зарегистрированных по referral-коду данного пользователя.
-    """
-
     async with _get_pool().acquire() as connection:
-        result = await connection.fetchval(
+        count = await connection.fetchval(
             """
             SELECT COUNT(*)
             FROM users AS invited
@@ -473,7 +356,7 @@ async def count_referrals(
             telegram_id,
         )
 
-    return int(result or 0)
+    return int(count or 0)
 
 
 # ============================================================
@@ -514,20 +397,12 @@ async def _get_active_plans(
 
 
 async def get_active_single_plans() -> list[dict[str, Any]]:
-    """
-    Возвращает активные тарифы Single.
-    """
-
     return await _get_active_plans(
         "single"
     )
 
 
 async def get_active_family_plans() -> list[dict[str, Any]]:
-    """
-    Возвращает активные тарифы Family.
-    """
-
     return await _get_active_plans(
         "family"
     )
@@ -537,15 +412,6 @@ async def get_plan_by_code(
     code: str,
     only_active: bool = True,
 ) -> dict[str, Any] | None:
-    """
-    Возвращает тариф по его code.
-
-    Примеры:
-        single_1m
-        single_3m
-        family_1m
-        family_12m
-    """
 
     query = (
         f"SELECT {PLAN_COLUMNS} "
