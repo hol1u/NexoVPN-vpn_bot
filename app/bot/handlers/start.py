@@ -16,7 +16,6 @@ logger = logging.getLogger(__name__)
 
 router = Router()
 
-# callback_data кнопок главного меню
 CB_CONNECT = "menu:connect"
 CB_SUBSCRIPTION = "menu:subscription"
 CB_RENEW = "menu:renew"
@@ -25,8 +24,7 @@ CB_TOPUP = "menu:topup"
 CB_FAMILY = "menu:family"
 CB_INVITE = "menu:invite"
 CB_HELP = "menu:help"
-
-# callback_data секретной кнопки администратора
+CB_BACK = "menu:back"
 CB_ADMIN_STATS = "admin:stats"
 
 WELCOME_TEXT = (
@@ -37,28 +35,70 @@ WELCOME_TEXT = (
 
 
 def build_main_menu(is_admin: bool) -> InlineKeyboardMarkup:
-    """Главное меню. Кнопка админ-статистики добавляется только для администратора."""
     rows = [
         [InlineKeyboardButton(text="✨ Подключить VPN", callback_data=CB_CONNECT)],
         [
-            InlineKeyboardButton(text="📱 Моя подписка", callback_data=CB_SUBSCRIPTION),
-            InlineKeyboardButton(text="💳 Продлить подписку", callback_data=CB_RENEW),
+            InlineKeyboardButton(
+                text="📱 Моя подписка",
+                callback_data=CB_SUBSCRIPTION,
+            ),
+            InlineKeyboardButton(
+                text="💳 Продлить подписку",
+                callback_data=CB_RENEW,
+            ),
         ],
         [
             InlineKeyboardButton(text="💰 Баланс", callback_data=CB_BALANCE),
-            InlineKeyboardButton(text="💸 Пополнить баланс", callback_data=CB_TOPUP),
+            InlineKeyboardButton(
+                text="💸 Пополнить баланс",
+                callback_data=CB_TOPUP,
+            ),
         ],
-        [InlineKeyboardButton(text="👨‍👩‍👧 Семейная подписка", callback_data=CB_FAMILY)],
-        [InlineKeyboardButton(text="👥 Пригласить друзей", callback_data=CB_INVITE)],
+        [
+            InlineKeyboardButton(
+                text="👨‍👩‍👧 Семейная подписка",
+                callback_data=CB_FAMILY,
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="👥 Пригласить друзей",
+                callback_data=CB_INVITE,
+            )
+        ],
         [InlineKeyboardButton(text="ℹ️ Помощь", callback_data=CB_HELP)],
     ]
 
     if is_admin:
         rows.append(
-            [InlineKeyboardButton(text="📊 Админ-статистика", callback_data=CB_ADMIN_STATS)]
+            [
+                InlineKeyboardButton(
+                    text="📊 Админ-статистика",
+                    callback_data=CB_ADMIN_STATS,
+                )
+            ]
         )
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def build_subscription_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🛒 Купить VPN",
+                    callback_data=CB_CONNECT,
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="◀️ Назад",
+                    callback_data=CB_BACK,
+                )
+            ],
+        ]
+    )
 
 
 @router.message(CommandStart())
@@ -75,8 +115,6 @@ async def start_handler(message: Message) -> None:
     if user is None:
         return
 
-    # Регистрация при каждом /start: нового пользователя добавляем,
-    # существующему обновляем username и first_name.
     try:
         await upsert_user(
             telegram_id=user.id,
@@ -84,7 +122,10 @@ async def start_handler(message: Message) -> None:
             first_name=user.first_name,
         )
     except Exception:
-        logger.exception("Не удалось сохранить пользователя telegram_id=%s", user.id)
+        logger.exception(
+            "Не удалось сохранить пользователя telegram_id=%s",
+            user.id,
+        )
 
     await message.answer(
         WELCOME_TEXT,
@@ -92,10 +133,37 @@ async def start_handler(message: Message) -> None:
     )
 
 
+@router.callback_query(F.data == CB_SUBSCRIPTION)
+async def subscription_handler(callback: CallbackQuery) -> None:
+    await callback.answer()
+
+    if callback.message is None:
+        return
+
+    await callback.message.edit_text(
+        "📱 Моя подписка\n\n"
+        "Статус: Нет подписки",
+        reply_markup=build_subscription_menu(),
+    )
+
+
+@router.callback_query(F.data == CB_BACK)
+async def back_handler(callback: CallbackQuery) -> None:
+    await callback.answer()
+
+    if callback.message is None:
+        return
+
+    await callback.message.edit_text(
+        WELCOME_TEXT,
+        reply_markup=build_main_menu(
+            is_admin=callback.from_user.id in ADMIN_IDS
+        ),
+    )
+
+
 @router.callback_query(F.data == CB_ADMIN_STATS)
 async def admin_stats_handler(callback: CallbackQuery, bot: Bot) -> None:
-    # Проверка прав выполняется на сервере: одной скрытой кнопки мало,
-    # потому что callback_data может отправить кто угодно.
     if callback.from_user.id not in ADMIN_IDS:
         logger.warning(
             "Попытка открыть админ-статистику без прав: telegram_id=%s",
@@ -126,6 +194,4 @@ async def admin_stats_handler(callback: CallbackQuery, bot: Bot) -> None:
 
 @router.callback_query(F.data.startswith("menu:"))
 async def menu_placeholder_handler(callback: CallbackQuery) -> None:
-    # Заглушка: логика кнопок меню появится на следующих этапах.
-    # Ответ на callback нужен, чтобы у кнопки не «крутился» индикатор загрузки.
     await callback.answer("Этот раздел скоро появится.")
