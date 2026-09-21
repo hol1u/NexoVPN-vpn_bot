@@ -1,9 +1,7 @@
--- Структура базы данных проекта.
--- Файл выполняется при каждом запуске бота. Это безопасно:
--- IF NOT EXISTS не трогает уже созданные таблицы и данные.
+-- ============================================================
+-- USERS
+-- ============================================================
 
--- Пользователи Telegram.
--- telegram_id — уникальный идентификатор пользователя в Telegram (BIGINT: значения больше 2 млрд).
 CREATE TABLE IF NOT EXISTS users (
     id              BIGSERIAL PRIMARY KEY,
     telegram_id     BIGINT NOT NULL UNIQUE,
@@ -11,18 +9,45 @@ CREATE TABLE IF NOT EXISTS users (
     first_name      TEXT,
     is_blocked      BOOLEAN NOT NULL DEFAULT FALSE,
     balance_kopecks BIGINT NOT NULL DEFAULT 0,
+
+    -- Реферальная система
+    referral_code   TEXT UNIQUE,
+    referred_by     BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    referred_at     TIMESTAMPTZ,
+
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Если таблица users уже была создана раньше,
--- добавляем колонку баланса без потери существующих пользователей.
+
+-- Миграции для уже существующей таблицы users
+
 ALTER TABLE users
 ADD COLUMN IF NOT EXISTS balance_kopecks BIGINT NOT NULL DEFAULT 0;
 
--- Тарифы.
--- code — стабильный уникальный идентификатор тарифа (на него ссылаются кнопки Telegram).
--- type — single (обычная подписка) или family (семейная).
--- price_kopecks — цена в копейках (целое число: 169 ₽ = 16900).
+ALTER TABLE users
+ADD COLUMN IF NOT EXISTS referral_code TEXT;
+
+ALTER TABLE users
+ADD COLUMN IF NOT EXISTS referred_by BIGINT;
+
+ALTER TABLE users
+ADD COLUMN IF NOT EXISTS referred_at TIMESTAMPTZ;
+
+
+-- Индексы / ограничения для реферальной системы
+
+CREATE UNIQUE INDEX IF NOT EXISTS users_referral_code_unique
+ON users (referral_code)
+WHERE referral_code IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS users_referred_by_idx
+ON users (referred_by);
+
+
+-- ============================================================
+-- PLANS
+-- ============================================================
+
 CREATE TABLE IF NOT EXISTS plans (
     id             BIGSERIAL PRIMARY KEY,
     code           TEXT NOT NULL UNIQUE,
@@ -34,16 +59,25 @@ CREATE TABLE IF NOT EXISTS plans (
     created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Начальный набор тарифов. ON CONFLICT DO NOTHING: при повторном запуске
--- дубликаты не создаются, а уже изменённые цены не перезаписываются.
-INSERT INTO plans (code, type, duration_days, price_kopecks, device_limit)
+
+-- Начальные тарифы
+
+INSERT INTO plans (
+    code,
+    type,
+    duration_days,
+    price_kopecks,
+    device_limit
+)
 VALUES
     ('single_1m',  'single',  30,  16900, 1),
     ('single_3m',  'single',  90,  42900, 1),
     ('single_6m',  'single', 180,  74900, 1),
     ('single_12m', 'single', 365, 109900, 1),
+
     ('family_1m',  'family',  30,  36900, 5),
     ('family_3m',  'family',  90,  94900, 5),
     ('family_6m',  'family', 180, 164900, 5),
     ('family_12m', 'family', 365, 259000, 5)
+
 ON CONFLICT (code) DO NOTHING;
