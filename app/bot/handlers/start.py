@@ -1,4 +1,4 @@
-import logging
+    import logging
 
 from aiogram import Bot, F, Router
 from aiogram.filters import CommandStart
@@ -40,8 +40,10 @@ def build_main_menu(is_admin: bool) -> InlineKeyboardMarkup:
     """Главное меню. Кнопка админ-статистики добавляется только для администратора."""
     rows = [
         [InlineKeyboardButton(text="✨ Подключить VPN", callback_data=CB_CONNECT)],
-        [InlineKeyboardButton(text="📱 Моя подписка", callback_data=CB_SUBSCRIPTION)],
-        [InlineKeyboardButton(text="💳 Продлить подписку", callback_data=CB_RENEW)],
+        [
+            InlineKeyboardButton(text="📱 Моя подписка", callback_data=CB_SUBSCRIPTION),
+            InlineKeyboardButton(text="💳 Продлить подписку", callback_data=CB_RENEW),
+        ],
         [
             InlineKeyboardButton(text="💰 Баланс", callback_data=CB_BALANCE),
             InlineKeyboardButton(text="💸 Пополнить баланс", callback_data=CB_TOPUP),
