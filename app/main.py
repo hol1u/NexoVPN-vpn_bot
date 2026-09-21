@@ -85,7 +85,11 @@ async def telegram_webhook(
     try:
         telegram_update = Update.model_validate(update, context={"bot": bot})
         await dp.feed_update(bot, telegram_update)
-    except Exception:
+    except Exception as exc:
         logger.exception("Ошибка при обработке обновления Telegram")
+        raise HTTPException(
+            status_code=500,
+            detail="Telegram update processing failed",
+        ) from exc
 
     return {"ok": True}
