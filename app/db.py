@@ -54,7 +54,9 @@ async def apply_schema() -> None:
 
     async with _get_pool().acquire() as connection:
         async with connection.transaction():
-            await connection.execute(f"SELECT pg_advisory_xact_lock({SCHEMA_LOCK_ID})")
+            await connection.execute(
+                f"SELECT pg_advisory_xact_lock({SCHEMA_LOCK_ID})"
+            )
             await connection.execute(schema_sql)
 
     logger.info("Схема базы данных применена")
@@ -109,3 +111,38 @@ async def count_users() -> int:
     """Общее количество зарегистрированных пользователей."""
     async with _get_pool().acquire() as connection:
         return await connection.fetchval("SELECT COUNT(*) FROM users")
+
+
+async def get_user_balance(telegram_id: int) -> int:
+    """Возвращает баланс пользователя в копейках."""
+    async with _get_pool().acquire() as connection:
+        balance = await connection.fetchval(
+            """
+            SELECT balance_kopecks
+            FROM users
+            WHERE telegram_id = $1
+            """,
+            telegram_id,
+        )
+
+    if balance is None:
+        return 0
+
+    return int(balance)
+
+
+async def add_user_balance(telegram_id: int, amount_kopecks: int) -> None:
+    """Увеличивает баланс пользователя на указанную сумму в копейках."""
+    if amount_kopecks <= 0:
+        raise ValueError("amount_kopecks must be greater than zero")
+
+    async with _get_pool().acquire() as connection:
+        await connection.execute(
+            """
+            UPDATE users
+            SET balance_kopecks = balance_kopecks + $1
+            WHERE telegram_id = $2
+            """,
+            amount_kopecks,
+            telegram_id,
+        )
