@@ -11,7 +11,11 @@ from aiogram.types import (
     Message,
 )
 
-from app.config import ADMIN_IDS
+from app.config import (
+    ADMIN_IDS,
+    REQUIRED_CHANNEL_ID,
+    REQUIRED_CHANNEL_URL,
+)
 from app.db import (
     check_db,
     count_users,
@@ -26,6 +30,13 @@ logger = logging.getLogger(__name__)
 
 router = Router()
 
+
+# ============================================================
+# CALLBACK DATA
+# ============================================================
+
+CB_CHECK_SUBSCRIPTION = "subscription:check"
+
 CB_CONNECT = "menu:connect"
 CB_SUBSCRIPTION = "menu:subscription"
 CB_RENEW = "menu:renew"
@@ -38,9 +49,13 @@ CB_BACK = "menu:back"
 CB_CANCEL = "balance:cancel"
 CB_ADMIN_STATS = "admin:stats"
 
-# Начало callback_data выбранного тарифа: plan:single_1m, renew:single_3m
 CB_PLAN_PREFIX = "plan:"
 CB_RENEW_PLAN_PREFIX = "renew:"
+
+
+# ============================================================
+# TEXTS
+# ============================================================
 
 WELCOME_TEXT = (
     "👋 Добро пожаловать в NexoVPN\n\n"
@@ -48,6 +63,116 @@ WELCOME_TEXT = (
     "Выберите действие ниже 👇"
 )
 
+
+SUBSCRIPTION_REQUIRED_TEXT = (
+    "👋 Добро пожаловать в Nexo VPN\n\n"
+    "🌐 Для начала работы подпишитесь на наш канал.\n"
+    "Это займёт всего пару секунд!\n\n"
+    "После подписки нажмите «🟢 Я подписался»."
+)
+
+
+SUBSCRIPTION_NOT_CONFIRMED_TEXT = (
+    "❌ Вы ещё не подписались на канал.\n\n"
+    "Подпишитесь на канал и нажмите\n"
+    "«🟢 Я подписался» ещё раз."
+)
+
+
+# ============================================================
+# SUBSCRIPTION CHECK
+# ============================================================
+
+def build_subscription_gate_menu() -> InlineKeyboardMarkup:
+    """
+    Кнопки обязательной подписки.
+
+    Первая кнопка открывает канал.
+    Вторая запускает реальную проверку подписки через Telegram API.
+    """
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="⚡ Подписаться на канал",
+                    url=REQUIRED_CHANNEL_URL,
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🟢 Я подписался",
+                    callback_data=CB_CHECK_SUBSCRIPTION,
+                    style="success",
+                )
+            ],
+        ]
+    )
+
+
+async def is_channel_subscribed(
+    bot: Bot,
+    user_id: int,
+) -> bool:
+    """
+    Проверяет, состоит ли пользователь в обязательном канале.
+
+    Считаем подпиской:
+    - creator
+    - administrator
+    - member
+    - restricted + is_member=True
+    """
+    try:
+        member = await bot.get_chat_member(
+            chat_id=REQUIRED_CHANNEL_ID,
+            user_id=user_id,
+        )
+    except Exception:
+        logger.exception(
+            "Не удалось проверить подписку: telegram_id=%s",
+            user_id,
+        )
+        return False
+
+    if member.status in {"creator", "administrator", "member"}:
+        return True
+
+    if member.status == "restricted":
+        return bool(getattr(member, "is_member", False))
+
+    return False
+
+
+async def show_subscription_gate(
+    message: Message,
+) -> None:
+    """Показывает пользователю экран обязательной подписки."""
+    await message.answer(
+        SUBSCRIPTION_REQUIRED_TEXT,
+        reply_markup=build_subscription_gate_menu(),
+    )
+
+
+async def show_subscription_gate_after_failed_check(
+    callback: CallbackQuery,
+) -> None:
+    """Повторно показывает экран подписки после неудачной проверки."""
+    if callback.message is None:
+        return
+
+    try:
+        await callback.message.edit_text(
+            SUBSCRIPTION_NOT_CONFIRMED_TEXT,
+            reply_markup=build_subscription_gate_menu(),
+        )
+    except TelegramBadRequest as exc:
+        if "message is not modified" not in str(exc):
+            raise
+
+
+# ============================================================
+# MAIN MENU
+# ============================================================
 
 def build_main_menu(is_admin: bool) -> InlineKeyboardMarkup:
     rows = [
@@ -110,6 +235,10 @@ def build_main_menu(is_admin: bool) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+# ============================================================
+# SUBSCRIPTION / BALANCE MENUS
+# ============================================================
+
 def build_subscription_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -164,6 +293,10 @@ def build_topup_cancel_menu() -> InlineKeyboardMarkup:
     )
 
 
+# ============================================================
+# PRICE / PLAN HELPERS
+# ============================================================
+
 def format_balance(balance_kopecks: int) -> str:
     rubles = balance_kopecks / 100
     return f"{rubles:.2f}".rstrip("0").rstrip(".")
@@ -171,13 +304,10 @@ def format_balance(balance_kopecks: int) -> str:
 
 NBSP = "\u00a0"
 
-# Эмодзи семьи из четырёх человек. Записано кодами, чтобы символ
-# не потерялся при копировании.
 FAMILY_TITLE_EMOJI = "\U0001F468\u200D\U0001F469\u200D\U0001F467\u200D\U0001F466"
 
 
 def format_price(price_kopecks: int) -> str:
-    """Цена для сообщения: 169 ₽, 1 099 ₽. Только целые числа, без float."""
     rubles, kopecks = divmod(price_kopecks, 100)
     text = f"{rubles:,}".replace(",", NBSP)
 
@@ -188,7 +318,6 @@ def format_price(price_kopecks: int) -> str:
 
 
 def plan_months(plan: dict[str, Any]) -> int:
-    """Срок тарифа в месяцах: 30 дн. = 1, 90 = 3, 180 = 6, 365 = 12."""
     return max(1, round(plan["duration_days"] / 30))
 
 
@@ -223,7 +352,6 @@ def devices_up_to(device_limit: int) -> str:
 
 
 def format_plan_line(plan: dict[str, Any]) -> str:
-    """Одна строка тарифа: ⚡ 1 месяц — 169 ₽ или 🔥 3 месяца — 429 ₽ · ~143 ₽/мес."""
     months = plan_months(plan)
     price_kopecks = plan["price_kopecks"]
 
@@ -233,7 +361,6 @@ def format_plan_line(plan: dict[str, Any]) -> str:
     )
 
     if months > 1:
-        # Цена за месяц с округлением до целого рубля (целочисленная математика).
         per_month = (price_kopecks + months * 50) // (months * 100)
         per_month_text = f"{per_month:,}".replace(",", NBSP)
         line += f" · ~{per_month_text}{NBSP}₽/мес"
@@ -241,13 +368,25 @@ def format_plan_line(plan: dict[str, Any]) -> str:
     return line
 
 
-def build_single_plans_text(plans: list[dict[str, Any]]) -> str:
-    lines = "\n".join(format_plan_line(plan) for plan in plans)
+def build_single_plans_text(
+    plans: list[dict[str, Any]],
+) -> str:
+    lines = "\n".join(
+        format_plan_line(plan)
+        for plan in plans
+    )
+
     return f"🌐 NexoVPN\n\n{lines}"
 
 
-def build_family_plans_text(plans: list[dict[str, Any]]) -> str:
-    lines = "\n".join(format_plan_line(plan) for plan in plans)
+def build_family_plans_text(
+    plans: list[dict[str, Any]],
+) -> str:
+    lines = "\n".join(
+        format_plan_line(plan)
+        for plan in plans
+    )
+
     return (
         f"{FAMILY_TITLE_EMOJI} NexoVPN Family\n\n"
         f"🏠 {devices_up_to(plans[0]['device_limit'])}\n\n"
@@ -255,13 +394,21 @@ def build_family_plans_text(plans: list[dict[str, Any]]) -> str:
     )
 
 
-def build_renew_plans_text(plans: list[dict[str, Any]]) -> str:
-    lines = "\n".join(format_plan_line(plan) for plan in plans)
+def build_renew_plans_text(
+    plans: list[dict[str, Any]],
+) -> str:
+    lines = "\n".join(
+        format_plan_line(plan)
+        for plan in plans
+    )
+
     return f"🔄 Продление подписки\n\n{lines}"
 
 
-def format_plan_card(plan: dict[str, Any], renewal: bool) -> str:
-    """Карточка выбранного тарифа. Оплаты пока нет."""
+def format_plan_card(
+    plan: dict[str, Any],
+    renewal: bool,
+) -> str:
     months = plan_months(plan)
     is_family = plan["type"] == "family"
 
@@ -287,7 +434,9 @@ def format_plan_card(plan: dict[str, Any], renewal: bool) -> str:
     )
 
 
-def build_back_button(callback_data: str) -> InlineKeyboardButton:
+def build_back_button(
+    callback_data: str,
+) -> InlineKeyboardButton:
     return InlineKeyboardButton(
         text="◀️ Назад",
         callback_data=callback_data,
@@ -300,11 +449,11 @@ def build_plans_menu(
     prefix: str,
     back_callback: str,
 ) -> InlineKeyboardMarkup:
-    """Кнопки тарифов по две в ряд и кнопка «Назад» отдельной строкой."""
     buttons = []
 
     for plan in plans:
         months = plan_months(plan)
+
         buttons.append(
             InlineKeyboardButton(
                 text=f"{plan_emoji(months)} {months_label(months)}",
@@ -312,10 +461,18 @@ def build_plans_menu(
             )
         )
 
-    rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
-    rows.append([build_back_button(back_callback)])
+    rows = [
+        buttons[i:i + 2]
+        for i in range(0, len(buttons), 2)
+    ]
 
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    rows.append(
+        [build_back_button(back_callback)]
+    )
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=rows
+    )
 
 
 def build_no_subscription_menu() -> InlineKeyboardMarkup:
@@ -327,47 +484,72 @@ def build_no_subscription_menu() -> InlineKeyboardMarkup:
                     callback_data=CB_CONNECT,
                 )
             ],
-            [build_back_button(CB_BACK)],
+            [
+                build_back_button(CB_BACK)
+            ],
         ]
     )
 
 
-def build_plan_card_menu(back_callback: str) -> InlineKeyboardMarkup:
+def build_plan_card_menu(
+    back_callback: str,
+) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        inline_keyboard=[[build_back_button(back_callback)]]
+        inline_keyboard=[
+            [
+                build_back_button(back_callback)
+            ]
+        ]
     )
 
 
-async def has_active_subscription(telegram_id: int) -> bool:
-    """Есть ли у пользователя активная подписка.
+# ============================================================
+# SUBSCRIPTION PLACEHOLDER
+# ============================================================
 
-    Таблицы подписок в базе пока нет (она появится на этапе подписок),
-    поэтому сейчас всегда возвращается False.
+async def has_active_subscription(
+    telegram_id: int,
+) -> bool:
+    """
+    Таблица подписок пока не подключена.
+    На этапе оплаты/VPN здесь появится реальная проверка.
     """
     return False
 
+
+# ============================================================
+# COMMON EDIT HELPER
+# ============================================================
 
 async def edit_menu(
     callback: CallbackQuery,
     text: str,
     reply_markup: InlineKeyboardMarkup,
 ) -> None:
-    """Заменяет текст и кнопки сообщения, в котором нажали кнопку."""
     message = callback.message
 
     if not isinstance(message, Message):
         return
 
     try:
-        await message.edit_text(text, reply_markup=reply_markup)
+        await message.edit_text(
+            text,
+            reply_markup=reply_markup,
+        )
     except TelegramBadRequest as exc:
-        # Повторное нажатие: текст не изменился, это не ошибка.
         if "message is not modified" not in str(exc):
             raise
 
 
+# ============================================================
+# /START
+# ============================================================
+
 @router.message(CommandStart())
-async def start_handler(message: Message) -> None:
+async def start_handler(
+    message: Message,
+    bot: Bot,
+) -> None:
     db_ok = await check_db()
 
     if not db_ok:
@@ -377,6 +559,7 @@ async def start_handler(message: Message) -> None:
         return
 
     user = message.from_user
+
     if user is None:
         return
 
@@ -392,6 +575,17 @@ async def start_handler(message: Message) -> None:
             user.id,
         )
 
+    # Обязательная проверка подписки.
+    subscribed = await is_channel_subscribed(
+        bot=bot,
+        user_id=user.id,
+    )
+
+    if not subscribed:
+        await show_subscription_gate(message)
+        return
+
+    # Подписка подтверждена — показываем обычное меню.
     await message.answer(
         WELCOME_TEXT,
         reply_markup=build_main_menu(
@@ -400,8 +594,62 @@ async def start_handler(message: Message) -> None:
     )
 
 
-@router.callback_query(F.data == CB_SUBSCRIPTION)
-async def subscription_handler(callback: CallbackQuery) -> None:
+# ============================================================
+# SUBSCRIPTION CHECK BUTTON
+# ============================================================
+
+@router.callback_query(
+    F.data == CB_CHECK_SUBSCRIPTION
+)
+async def check_subscription_handler(
+    callback: CallbackQuery,
+    bot: Bot,
+) -> None:
+    subscribed = await is_channel_subscribed(
+        bot=bot,
+        user_id=callback.from_user.id,
+    )
+
+    if not subscribed:
+        await callback.answer(
+            "Подписка пока не найдена.",
+            show_alert=True,
+        )
+
+        await show_subscription_gate_after_failed_check(
+            callback
+        )
+        return
+
+    await callback.answer(
+        "✅ Подписка подтверждена!"
+    )
+
+    if callback.message is None:
+        return
+
+    try:
+        await callback.message.edit_text(
+            WELCOME_TEXT,
+            reply_markup=build_main_menu(
+                is_admin=callback.from_user.id in ADMIN_IDS
+            ),
+        )
+    except TelegramBadRequest as exc:
+        if "message is not modified" not in str(exc):
+            raise
+
+
+# ============================================================
+# MY SUBSCRIPTION
+# ============================================================
+
+@router.callback_query(
+    F.data == CB_SUBSCRIPTION
+)
+async def subscription_handler(
+    callback: CallbackQuery,
+) -> None:
     await callback.answer()
 
     if callback.message is None:
@@ -414,17 +662,28 @@ async def subscription_handler(callback: CallbackQuery) -> None:
     )
 
 
-@router.callback_query(F.data == CB_BALANCE)
-async def balance_handler(callback: CallbackQuery) -> None:
+# ============================================================
+# BALANCE
+# ============================================================
+
+@router.callback_query(
+    F.data == CB_BALANCE
+)
+async def balance_handler(
+    callback: CallbackQuery,
+) -> None:
     user_id = callback.from_user.id
 
     try:
-        balance_kopecks = await get_user_balance(user_id)
+        balance_kopecks = await get_user_balance(
+            user_id
+        )
     except Exception:
         logger.exception(
             "Не удалось получить баланс пользователя telegram_id=%s",
             user_id,
         )
+
         await callback.answer(
             "Не удалось получить баланс. Попробуйте позже.",
             show_alert=True,
@@ -436,7 +695,9 @@ async def balance_handler(callback: CallbackQuery) -> None:
     if callback.message is None:
         return
 
-    balance = format_balance(balance_kopecks)
+    balance = format_balance(
+        balance_kopecks
+    )
 
     await callback.message.edit_text(
         f"💰 Ваш баланс: {balance} ₽",
@@ -444,30 +705,47 @@ async def balance_handler(callback: CallbackQuery) -> None:
     )
 
 
-@router.callback_query(F.data == CB_TOPUP)
-async def topup_handler(callback: CallbackQuery) -> None:
+# ============================================================
+# TOP UP
+# ============================================================
+
+@router.callback_query(
+    F.data == CB_TOPUP
+)
+async def topup_handler(
+    callback: CallbackQuery,
+) -> None:
     await callback.answer()
 
     if callback.message is None:
         return
 
     await callback.message.edit_text(
-        "💳 Введите сумму пополнения в рублях (например: 100):",
+        "💳 Введите сумму пополнения в рублях "
+        "(например: 100):",
         reply_markup=build_topup_cancel_menu(),
     )
 
 
-@router.callback_query(F.data == CB_CANCEL)
-async def cancel_topup_handler(callback: CallbackQuery) -> None:
+@router.callback_query(
+    F.data == CB_CANCEL
+)
+async def cancel_topup_handler(
+    callback: CallbackQuery,
+) -> None:
     user_id = callback.from_user.id
 
     try:
-        balance_kopecks = await get_user_balance(user_id)
+        balance_kopecks = await get_user_balance(
+            user_id
+        )
     except Exception:
         logger.exception(
-            "Не удалось получить баланс после отмены пополнения: telegram_id=%s",
+            "Не удалось получить баланс после отмены "
+            "пополнения: telegram_id=%s",
             user_id,
         )
+
         await callback.answer(
             "Не удалось получить баланс. Попробуйте позже.",
             show_alert=True,
@@ -479,7 +757,9 @@ async def cancel_topup_handler(callback: CallbackQuery) -> None:
     if callback.message is None:
         return
 
-    balance = format_balance(balance_kopecks)
+    balance = format_balance(
+        balance_kopecks
+    )
 
     await callback.message.edit_text(
         f"💰 Ваш баланс: {balance} ₽",
@@ -487,8 +767,16 @@ async def cancel_topup_handler(callback: CallbackQuery) -> None:
     )
 
 
-@router.callback_query(F.data == CB_BACK)
-async def back_handler(callback: CallbackQuery) -> None:
+# ============================================================
+# BACK
+# ============================================================
+
+@router.callback_query(
+    F.data == CB_BACK
+)
+async def back_handler(
+    callback: CallbackQuery,
+) -> None:
     await callback.answer()
 
     if callback.message is None:
@@ -502,12 +790,23 @@ async def back_handler(callback: CallbackQuery) -> None:
     )
 
 
-@router.callback_query(F.data == CB_CONNECT)
-async def connect_handler(callback: CallbackQuery) -> None:
+# ============================================================
+# CONNECT / NORMAL PLANS
+# ============================================================
+
+@router.callback_query(
+    F.data == CB_CONNECT
+)
+async def connect_handler(
+    callback: CallbackQuery,
+) -> None:
     try:
         plans = await get_active_single_plans()
     except Exception:
-        logger.exception("Не удалось загрузить обычные тарифы")
+        logger.exception(
+            "Не удалось загрузить обычные тарифы"
+        )
+
         await callback.answer(
             "Не удалось загрузить тарифы. Попробуйте позже.",
             show_alert=True,
@@ -527,16 +826,31 @@ async def connect_handler(callback: CallbackQuery) -> None:
     await edit_menu(
         callback,
         build_single_plans_text(plans),
-        build_plans_menu(plans, CB_PLAN_PREFIX, CB_BACK),
+        build_plans_menu(
+            plans,
+            CB_PLAN_PREFIX,
+            CB_BACK,
+        ),
     )
 
 
-@router.callback_query(F.data == CB_FAMILY)
-async def family_handler(callback: CallbackQuery) -> None:
+# ============================================================
+# FAMILY PLANS
+# ============================================================
+
+@router.callback_query(
+    F.data == CB_FAMILY
+)
+async def family_handler(
+    callback: CallbackQuery,
+) -> None:
     try:
         plans = await get_active_family_plans()
     except Exception:
-        logger.exception("Не удалось загрузить семейные тарифы")
+        logger.exception(
+            "Не удалось загрузить семейные тарифы"
+        )
+
         await callback.answer(
             "Не удалось загрузить тарифы. Попробуйте позже.",
             show_alert=True,
@@ -548,7 +862,8 @@ async def family_handler(callback: CallbackQuery) -> None:
     if not plans:
         await edit_menu(
             callback,
-            "Семейные тарифы временно недоступны. Попробуйте позже.",
+            "Семейные тарифы временно недоступны. "
+            "Попробуйте позже.",
             build_plan_card_menu(CB_BACK),
         )
         return
@@ -556,14 +871,29 @@ async def family_handler(callback: CallbackQuery) -> None:
     await edit_menu(
         callback,
         build_family_plans_text(plans),
-        build_plans_menu(plans, CB_PLAN_PREFIX, CB_BACK),
+        build_plans_menu(
+            plans,
+            CB_PLAN_PREFIX,
+            CB_BACK,
+        ),
     )
 
 
-@router.callback_query(F.data == CB_RENEW)
-async def renew_handler(callback: CallbackQuery) -> None:
-    if not await has_active_subscription(callback.from_user.id):
+# ============================================================
+# RENEW
+# ============================================================
+
+@router.callback_query(
+    F.data == CB_RENEW
+)
+async def renew_handler(
+    callback: CallbackQuery,
+) -> None:
+    if not await has_active_subscription(
+        callback.from_user.id
+    ):
         await callback.answer()
+
         await edit_menu(
             callback,
             "У вас нет активной подписки",
@@ -574,7 +904,10 @@ async def renew_handler(callback: CallbackQuery) -> None:
     try:
         plans = await get_active_single_plans()
     except Exception:
-        logger.exception("Не удалось загрузить тарифы для продления")
+        logger.exception(
+            "Не удалось загрузить тарифы для продления"
+        )
+
         await callback.answer(
             "Не удалось загрузить тарифы. Попробуйте позже.",
             show_alert=True,
@@ -594,9 +927,17 @@ async def renew_handler(callback: CallbackQuery) -> None:
     await edit_menu(
         callback,
         build_renew_plans_text(plans),
-        build_plans_menu(plans, CB_RENEW_PLAN_PREFIX, CB_BACK),
+        build_plans_menu(
+            plans,
+            CB_RENEW_PLAN_PREFIX,
+            CB_BACK,
+        ),
     )
 
+
+# ============================================================
+# PLAN CARD
+# ============================================================
 
 async def show_plan_card(
     callback: CallbackQuery,
@@ -606,18 +947,27 @@ async def show_plan_card(
     try:
         plan = await get_plan_by_code(code)
     except Exception:
-        logger.exception("Не удалось загрузить тариф code=%s", code)
+        logger.exception(
+            "Не удалось загрузить тариф code=%s",
+            code,
+        )
+
         await callback.answer(
             "Не удалось загрузить тариф. Попробуйте позже.",
             show_alert=True,
         )
         return
 
-    # Тариф мог быть отключён, а callback_data может прислать кто угодно:
-    # поэтому тариф всегда проверяется по базе.
-    if plan is None or (renewal and plan["type"] != "single"):
+    if plan is None:
         await callback.answer(
             "Этот тариф недоступен.",
+            show_alert=True,
+        )
+        return
+
+    if renewal and plan["type"] != "single":
+        await callback.answer(
+            "Этот тариф недоступен для продления.",
             show_alert=True,
         )
         return
@@ -633,33 +983,76 @@ async def show_plan_card(
 
     await edit_menu(
         callback,
-        format_plan_card(plan, renewal=renewal),
-        build_plan_card_menu(back_callback),
+        format_plan_card(
+            plan,
+            renewal=renewal,
+        ),
+        build_plan_card_menu(
+            back_callback
+        ),
     )
 
 
-@router.callback_query(F.data.startswith(CB_PLAN_PREFIX))
-async def plan_selected_handler(callback: CallbackQuery) -> None:
-    code = (callback.data or "").removeprefix(CB_PLAN_PREFIX)
-    await show_plan_card(callback, code=code, renewal=False)
+# ============================================================
+# PLAN SELECTED
+# ============================================================
+
+@router.callback_query(
+    F.data.startswith(CB_PLAN_PREFIX)
+)
+async def plan_selected_handler(
+    callback: CallbackQuery,
+) -> None:
+    code = (
+        callback.data or ""
+    ).removeprefix(
+        CB_PLAN_PREFIX
+    )
+
+    await show_plan_card(
+        callback,
+        code=code,
+        renewal=False,
+    )
 
 
-@router.callback_query(F.data.startswith(CB_RENEW_PLAN_PREFIX))
-async def renew_plan_selected_handler(callback: CallbackQuery) -> None:
-    code = (callback.data or "").removeprefix(CB_RENEW_PLAN_PREFIX)
-    await show_plan_card(callback, code=code, renewal=True)
+@router.callback_query(
+    F.data.startswith(CB_RENEW_PLAN_PREFIX)
+)
+async def renew_plan_selected_handler(
+    callback: CallbackQuery,
+) -> None:
+    code = (
+        callback.data or ""
+    ).removeprefix(
+        CB_RENEW_PLAN_PREFIX
+    )
+
+    await show_plan_card(
+        callback,
+        code=code,
+        renewal=True,
+    )
 
 
-@router.callback_query(F.data == CB_ADMIN_STATS)
+# ============================================================
+# ADMIN STATS
+# ============================================================
+
+@router.callback_query(
+    F.data == CB_ADMIN_STATS
+)
 async def admin_stats_handler(
     callback: CallbackQuery,
     bot: Bot,
 ) -> None:
     if callback.from_user.id not in ADMIN_IDS:
         logger.warning(
-            "Попытка открыть админ-статистику без прав: telegram_id=%s",
+            "Попытка открыть админ-статистику "
+            "без прав: telegram_id=%s",
             callback.from_user.id,
         )
+
         await callback.answer()
         return
 
@@ -669,8 +1062,10 @@ async def admin_stats_handler(
         logger.exception(
             "Не удалось получить статистику пользователей"
         )
+
         await callback.answer(
-            "Не удалось получить статистику. Попробуйте позже.",
+            "Не удалось получить статистику. "
+            "Попробуйте позже.",
             show_alert=True,
         )
         return
@@ -681,12 +1076,19 @@ async def admin_stats_handler(
         chat_id=callback.from_user.id,
         text=(
             "📊 Админ-статистика\n\n"
-            f"Всего зарегистрировано пользователей: {total_users}"
+            f"Всего зарегистрировано пользователей: "
+            f"{total_users}"
         ),
     )
 
 
-@router.callback_query(F.data.startswith("menu:"))
+# ============================================================
+# PLACEHOLDER MENU HANDLER
+# ============================================================
+
+@router.callback_query(
+    F.data.startswith("menu:")
+)
 async def menu_placeholder_handler(
     callback: CallbackQuery,
 ) -> None:
