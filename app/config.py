@@ -35,17 +35,14 @@ def _get_base_url() -> str:
 
 
 def _get_webhook_secret() -> str:
-    """Секрет вебхука Telegram: из переменной или вычисляется из токена бота.
-
-    Telegram принимает только латинские буквы, цифры, _ и -, поэтому сам токен
-    (в нём есть двоеточие) использовать нельзя.
-    """
+    """Секрет вебхука Telegram."""
     explicit = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
+
     if explicit:
         if not re.fullmatch(r"[A-Za-z0-9_-]{16,256}", explicit):
             raise RuntimeError(
-                "TELEGRAM_WEBHOOK_SECRET: допустимы только латинские буквы, цифры, "
-                "_ и -, длина от 16 до 256 символов."
+                "TELEGRAM_WEBHOOK_SECRET: допустимы только латинские буквы, "
+                "цифры, _ и -, длина от 16 до 256 символов."
             )
         return explicit
 
@@ -58,3 +55,8 @@ def _get_webhook_secret() -> str:
 
 BASE_URL = _get_base_url()
 TELEGRAM_WEBHOOK_SECRET = _get_webhook_secret()
+
+
+# Канал, на который пользователь должен подписаться
+REQUIRED_CHANNEL_ID = int(get_required_env("REQUIRED_CHANNEL_ID"))
+REQUIRED_CHANNEL_URL = get_required_env("REQUIRED_CHANNEL_URL").strip()
