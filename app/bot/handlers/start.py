@@ -69,6 +69,9 @@ CB_RENEW_PLAN_PREFIX = "renew:"
 # telegram_id -> время последней проверки подписки (time.monotonic())
 _last_subscription_check: dict[int, float] = {}
 
+# кэш username бота (запрашивается через get_me() один раз за жизнь процесса)
+_cached_bot_username: str | None = None
+
 
 # ============================================================
 # TEXTS
@@ -751,6 +754,33 @@ async def edit_menu(
 
 
 # ============================================================
+# BOT USERNAME (кэшируется через get_me())
+# ============================================================
+
+async def get_bot_username(bot: Bot) -> str | None:
+    """
+    Возвращает username бота через поддерживаемый метод API — get_me().
+    У объекта Bot в aiogram 3 нет готового атрибута .username,
+    поэтому результат кэшируется в памяти процесса после первого запроса.
+    """
+    global _cached_bot_username
+
+    if _cached_bot_username:
+        return _cached_bot_username
+
+    try:
+        me = await bot.get_me()
+    except Exception:
+        logger.exception(
+            "Не удалось получить данные бота через get_me()"
+        )
+        return None
+
+    _cached_bot_username = me.username
+    return _cached_bot_username
+
+
+# ============================================================
 # /START
 # ============================================================
 
@@ -945,17 +975,7 @@ async def invite_handler(
         )
         return
 
-    bot_username = callback.bot.username
-
-    if not bot_username:
-        try:
-            me = await callback.bot.get_me()
-            bot_username = me.username
-        except Exception:
-            logger.exception(
-                "Не удалось получить username бота для referral-ссылки"
-            )
-            bot_username = None
+    bot_username = await get_bot_username(callback.bot)
 
     if not bot_username:
         await callback.answer(
