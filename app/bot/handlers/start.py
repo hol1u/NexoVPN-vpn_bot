@@ -6,6 +6,8 @@ from urllib.parse import quote
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
@@ -60,6 +62,10 @@ CB_SUPPORT = "help:support"
 
 CB_PLAN_PREFIX = "plan:"
 CB_RENEW_PLAN_PREFIX = "renew:"
+
+CB_TOPUP_METHOD_PREFIX = "topup:method:"
+CB_TOPUP_METHOD_SBP = f"{CB_TOPUP_METHOD_PREFIX}sbp"
+CB_TOPUP_METHOD_CARD = f"{CB_TOPUP_METHOD_PREFIX}card"
 
 
 # ============================================================
@@ -322,8 +328,8 @@ def build_help_menu() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="📞 Написать в поддержку",
-                    url="https://t.me/nexovpn_proxy_help",
+                    text="👨‍💻 Написать в поддержку",
+                    url="https://t.me/nexo_proxy_help",
                 )
             ],
             [
@@ -392,6 +398,42 @@ def build_topup_cancel_menu() -> InlineKeyboardMarkup:
                 )
             ]
         ]
+    )
+
+
+def build_topup_method_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🏦 СБП",
+                    callback_data=CB_TOPUP_METHOD_SBP,
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="💳 Банковская карта",
+                    callback_data=CB_TOPUP_METHOD_CARD,
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="◀️ Назад",
+                    callback_data=CB_TOPUP,
+                    style="danger",
+                )
+            ],
+        ]
+    )
+
+
+def build_topup_method_text(
+    amount_kopecks: int,
+) -> str:
+    return (
+        "💳 Пополнение баланса\n\n"
+        f"Сумма: {format_price(amount_kopecks)}\n\n"
+        "Выберите способ оплаты:"
     )
 
 
@@ -1104,17 +1146,32 @@ async def balance_handler(
 # TOP UP
 # ============================================================
 
+class TopupStates(StatesGroup):
+    waiting_amount = State()
+    choosing_method = State()
+
+
 @router.callback_query(
     F.data == CB_TOPUP
 )
 async def topup_handler(
     callback: CallbackQuery,
+    state: FSMContext,
 ) -> None:
 
     await callback.answer()
 
     if callback.message is None:
         return
+
+    await state.set_state(
+        TopupStates.waiting_amount
+    )
+    await state.update_data(
+        topup_prompt_message_id=(
+            callback.message.message_id
+        )
+    )
 
     await callback.message.edit_text(
         "💳 Введите сумму пополнения "
@@ -1123,45 +1180,114 @@ async def topup_handler(
     )
 
 
+@router.message(
+    TopupStates.waiting_amount
+)
+async def topup_amount_handler(
+    message: Message,
+    state: FSMContext,
+) -> None:
+
+    raw_amount = (
+        (message.text or "")
+        .strip()
+        .replace(",", ".")
+    )
+
+    amount_rub: float | None
+
+    try:
+        amount_rub = float(raw_amount)
+
+    except ValueError:
+        amount_rub = None
+
+    if amount_rub is None or amount_rub <= 0:
+        await message.answer(
+            "Не удалось распознать сумму. "
+            "Введите число рублей, "
+            "например: 100"
+        )
+        return
+
+    amount_kopecks = round(
+        amount_rub * 100
+    )
+
+    data = await state.get_data()
+    prompt_message_id = data.get(
+        "topup_prompt_message_id"
+    )
+
+    await state.set_state(
+        TopupStates.choosing_method
+    )
+    await state.update_data(
+        topup_amount_kopecks=amount_kopecks
+    )
+
+    text = build_topup_method_text(
+        amount_kopecks
+    )
+    markup = build_topup_method_menu()
+
+    if prompt_message_id:
+        try:
+            await message.bot.edit_message_text(
+                text,
+                chat_id=message.chat.id,
+                message_id=prompt_message_id,
+                reply_markup=markup,
+            )
+            return
+
+        except TelegramBadRequest:
+            pass
+
+    await message.answer(
+        text,
+        reply_markup=markup,
+    )
+
+
 @router.callback_query(
     F.data == CB_CANCEL
 )
 async def cancel_topup_handler(
     callback: CallbackQuery,
+    state: FSMContext,
 ) -> None:
 
-    try:
-        balance_kopecks = (
-            await get_user_balance(
-                callback.from_user.id
-            )
-        )
-
-    except Exception:
-        logger.exception(
-            "Не удалось получить баланс "
-            "после отмены пополнения"
-        )
-
-        await callback.answer(
-            "Не удалось получить баланс. "
-            "Попробуйте позже.",
-            show_alert=True,
-        )
-        return
-
+    await state.clear()
     await callback.answer()
 
     if callback.message is None:
         return
 
-    balance = format_balance(
-        balance_kopecks
+    await callback.message.edit_text(
+        WELCOME_TEXT,
+        reply_markup=build_main_menu(
+            is_admin=(
+                callback.from_user.id
+                in ADMIN_IDS
+            )
+        ),
     )
 
-    await callback.message.edit_text(
-        f"💰 Ваш баланс: {balance} ₽",
-        reply_markup=build_balance_menu(),
+
+@router.callback_query(
+    F.data.startswith(
+        CB_TOPUP_METHOD_PREFIX
+    )
+)
+async def topup_method_handler(
+    callback: CallbackQuery,
+) -> None:
+
+    await callback.answer(
+        "🔜 Этот способ оплаты "
+        "скоро будет доступен.",
+        show_alert=True,
     )
 
 
