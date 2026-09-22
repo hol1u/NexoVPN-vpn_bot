@@ -1,4 +1,5 @@
 import logging
+import time
 from typing import Any
 from urllib.parse import quote
 
@@ -17,6 +18,7 @@ from app.config import (
     ADMIN_IDS,
     REQUIRED_CHANNEL_ID,
     REQUIRED_CHANNEL_URL,
+    SUBSCRIPTION_CHECK_COOLDOWN,
 )
 from app.db import (
     check_db,
@@ -58,6 +60,14 @@ CB_SUPPORT = "help:support"
 
 CB_PLAN_PREFIX = "plan:"
 CB_RENEW_PLAN_PREFIX = "renew:"
+
+
+# ============================================================
+# ANTI-SPAM STATE
+# ============================================================
+
+# telegram_id -> время последней проверки подписки (time.monotonic())
+_last_subscription_check: dict[int, float] = {}
 
 
 # ============================================================
@@ -830,9 +840,25 @@ async def check_subscription_handler(
     bot: Bot,
 ) -> None:
 
+    user_id = callback.from_user.id
+    now = time.monotonic()
+    last_check = _last_subscription_check.get(user_id)
+
+    if (
+        last_check is not None
+        and now - last_check < SUBSCRIPTION_CHECK_COOLDOWN
+    ):
+        await callback.answer(
+            "Слишком много попыток, попробуйте позже.",
+            show_alert=True,
+        )
+        return
+
+    _last_subscription_check[user_id] = now
+
     subscribed = await is_channel_subscribed(
         bot=bot,
-        user_id=callback.from_user.id,
+        user_id=user_id,
     )
 
     if not subscribed:
@@ -845,6 +871,8 @@ async def check_subscription_handler(
             callback
         )
         return
+
+    _last_subscription_check.pop(user_id, None)
 
     await callback.answer(
         "✅ Подписка подтверждена!"
