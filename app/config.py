@@ -1,70 +1,67 @@
-```python
-import time
-
-from aiogram.enums import ChatMemberStatus
-from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
-
-from app.config import REQUIRED_CHANNEL_ID, REQUIRED_CHANNEL_URL
-
-_last_subscription_check: dict[int, float] = {}
-SUBSCRIPTION_CHECK_COOLDOWN = 3.0  # секунды
+import hashlib
+import hmac
+import os
+import re
 
 
-def _subscription_gate_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="📢 Подписаться на канал", url=REQUIRED_CHANNEL_URL)],
-            [InlineKeyboardButton(text="🟢 Я подписался", callback_data="check_subscription")],
-        ]
-    )
+def get_required_env(name: str) -> str:
+    value = os.getenv(name)
+    if not value:
+        raise RuntimeError(f"Required environment variable is missing: {name}")
+    return value
 
 
-@router.callback_query(F.data == "check_subscription")
-async def check_subscription_handler(callback: CallbackQuery) -> None:
-    user_id = callback.from_user.id
-    now = time.monotonic()
+TELEGRAM_BOT_TOKEN = get_required_env("TELEGRAM_BOT_TOKEN")
+DATABASE_URL = get_required_env("DATABASE_URL")
 
-    last_attempt = _last_subscription_check.get(user_id)
-    if last_attempt is not None and now - last_attempt < SUBSCRIPTION_CHECK_COOLDOWN:
-        await callback.answer("Слишком много попыток, попробуйте позже.", show_alert=True)
-        return
-
-    _last_subscription_check[user_id] = now
-
-    try:
-        member = await callback.bot.get_chat_member(REQUIRED_CHANNEL_ID, user_id)
-    except Exception:
-        await callback.answer("Не удалось проверить подписку. Попробуйте позже.", show_alert=True)
-        return
-
-    if member.status in (
-        ChatMemberStatus.MEMBER,
-        ChatMemberStatus.ADMINISTRATOR,
-        ChatMemberStatus.CREATOR,
-    ):
-        _last_subscription_check.pop(user_id, None)
-        await callback.answer("Подписка подтверждена ✅")
-        await show_main_menu(callback)  # существующая функция показа главного меню
-        return
-
-    await callback.answer("Вы ещё не подписаны на канал.", show_alert=True)
-    await show_subscription_gate_after_failed_check(callback)
+ADMIN_IDS = [
+    int(value.strip())
+    for value in os.getenv("ADMIN_IDS", "").split(",")
+    if value.strip()
+]
 
 
-async def show_subscription_gate_after_failed_check(callback: CallbackQuery) -> None:
-    text = (
-        "🔒 Чтобы пользоваться ботом, подпишитесь на канал:\n"
-        f"{REQUIRED_CHANNEL_URL}\n\n"
-        "После подписки нажмите «🟢 Я подписался»."
-    )
+def _get_base_url() -> str:
+    """Публичный адрес сервиса. Пусто, если домен в Railway ещё не создан."""
+    explicit = os.getenv("BASE_URL", "").strip().rstrip("/")
+    if explicit:
+        return explicit
 
-    try:
-        await callback.message.edit_text(
-            text,
-            reply_markup=_subscription_gate_keyboard(),
-        )
-    except TelegramBadRequest as e:
-        if "message is not modified" not in str(e):
-            raise
-```
+    railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
+    if railway_domain:
+        return f"https://{railway_domain}"
+
+    return ""
+
+
+def _get_webhook_secret() -> str:
+    """Секрет вебхука Telegram."""
+    explicit = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
+
+    if explicit:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{16,256}", explicit):
+            raise RuntimeError(
+                "TELEGRAM_WEBHOOK_SECRET: допустимы только латинские буквы, "
+                "цифры, _ и -, длина от 16 до 256 символов."
+            )
+        return explicit
+
+    return hmac.new(
+        TELEGRAM_BOT_TOKEN.encode(),
+        b"telegram-webhook-secret",
+        hashlib.sha256,
+    ).hexdigest()
+
+
+BASE_URL = _get_base_url()
+TELEGRAM_WEBHOOK_SECRET = _get_webhook_secret()
+
+
+# Канал, на который пользователь должен подписаться
+REQUIRED_CHANNEL_ID = int(get_required_env("REQUIRED_CHANNEL_ID"))
+REQUIRED_CHANNEL_URL = get_required_env("REQUIRED_CHANNEL_URL").strip()
+
+# Антиспам для кнопки "Я подписался" (сек. между повторными проверками)
+SUBSCRIPTION_CHECK_COOLDOWN = float(
+    os.getenv("SUBSCRIPTION_CHECK_COOLDOWN", "3")
+)
