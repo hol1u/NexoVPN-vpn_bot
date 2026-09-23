@@ -258,3 +258,97 @@ UPDATE plans
 SET device_limit = 6
 WHERE type = 'family'
     AND device_limit = 5;
+
+-- ============================================================
+-- ADMINISTRATION (additive, safe for existing installations)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS subscriptions (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    plan_id BIGINT REFERENCES plans(id) ON DELETE SET NULL,
+    started_at TIMESTAMPTZ NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    device_limit INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'expired', 'cancelled')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS subscriptions_expires_idx ON subscriptions (expires_at);
+CREATE INDEX IF NOT EXISTS subscriptions_user_idx ON subscriptions (user_id);
+
+CREATE TABLE IF NOT EXISTS payments (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    plan_id BIGINT REFERENCES plans(id) ON DELETE SET NULL,
+    amount_kopecks BIGINT NOT NULL CHECK (amount_kopecks >= 0),
+    method TEXT,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'succeeded', 'failed', 'refunded')),
+    external_id TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS promo_codes (
+    id BIGSERIAL PRIMARY KEY,
+    code TEXT NOT NULL UNIQUE,
+    reward_type TEXT NOT NULL CHECK (reward_type IN ('discount', 'free_days')),
+    reward_value INTEGER NOT NULL CHECK (reward_value > 0),
+    total_limit INTEGER,
+    per_user_limit INTEGER NOT NULL DEFAULT 1,
+    starts_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ends_at TIMESTAMPTZ,
+    plan_id BIGINT REFERENCES plans(id) ON DELETE SET NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS promo_usages (
+    id BIGSERIAL PRIMARY KEY,
+    promo_id BIGINT NOT NULL REFERENCES promo_codes(id) ON DELETE CASCADE,
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (promo_id, user_id, created_at)
+);
+
+CREATE TABLE IF NOT EXISTS referral_rewards (
+    id BIGSERIAL PRIMARY KEY,
+    referrer_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    invited_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    amount_kopecks BIGINT NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accrued', 'cancelled')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS referral_settings (
+    id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    invite_bonus_kopecks BIGINT NOT NULL DEFAULT 0,
+    referrer_bonus_kopecks BIGINT NOT NULL DEFAULT 0,
+    condition TEXT NOT NULL DEFAULT 'confirmed_payment',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+INSERT INTO referral_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS broadcasts (
+    id BIGSERIAL PRIMARY KEY,
+    admin_telegram_id BIGINT NOT NULL,
+    audience TEXT NOT NULL,
+    message TEXT NOT NULL,
+    total_count INTEGER NOT NULL DEFAULT 0,
+    sent_count INTEGER NOT NULL DEFAULT 0,
+    failed_count INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'draft',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS admin_logs (
+    id BIGSERIAL PRIMARY KEY,
+    level TEXT NOT NULL CHECK (level IN ('error', 'warning', 'event')),
+    category TEXT NOT NULL,
+    message TEXT NOT NULL,
+    details TEXT,
+    telegram_id BIGINT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS admin_logs_created_idx ON admin_logs (created_at DESC);
+CREATE INDEX IF NOT EXISTS admin_logs_telegram_idx ON admin_logs (telegram_id);

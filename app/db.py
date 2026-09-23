@@ -546,3 +546,175 @@ async def get_plan_by_code(
         if row is not None
         else None
     )
+
+
+# ============================================================
+# ADMINISTRATION
+# ============================================================
+
+async def get_admin_stats(period: str = "today") -> dict[str, Any]:
+    intervals = {"today": "1 day", "week": "7 days", "month": "1 month"}
+    interval = intervals.get(period, "1 day")
+    async with _get_pool().acquire() as connection:
+        row = await connection.fetchrow(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM users) AS total_users,
+                (SELECT COUNT(*) FROM users WHERE last_activity_at >= NOW() - INTERVAL '15 minutes') AS online_users,
+                (SELECT COUNT(*) FROM subscriptions WHERE status = 'active' AND expires_at > NOW()) AS active_subscriptions,
+                (SELECT COUNT(*) FROM subscriptions WHERE status = 'active' AND expires_at > NOW() AND expires_at <= NOW() + INTERVAL '3 days') AS expiring_subscriptions,
+                (SELECT COALESCE(SUM(amount_kopecks), 0) FROM payments WHERE status = 'succeeded' AND created_at >= CURRENT_DATE) AS revenue_today,
+                (SELECT COALESCE(SUM(amount_kopecks), 0) FROM payments WHERE status = 'succeeded' AND created_at >= DATE_TRUNC('month', NOW())) AS revenue_month,
+                (SELECT COUNT(*) FROM users WHERE created_at >= CURRENT_DATE) AS new_users_today,
+                (SELECT COUNT(*) FROM users WHERE referred_by IS NOT NULL AND created_at >= NOW() - $1::INTERVAL) AS referrals_period,
+                (SELECT COUNT(*) FROM subscriptions WHERE status = 'active' AND expires_at <= NOW()) AS expired_subscriptions
+            """,
+            interval,
+        )
+    return dict(row)
+
+
+async def get_admin_logs(level: str | None = None, category: str | None = None, telegram_id: int | None = None) -> list[dict[str, Any]]:
+    async with _get_pool().acquire() as connection:
+        rows = await connection.fetch(
+            """
+            SELECT id, level, category, message, details, telegram_id, created_at
+            FROM admin_logs
+            WHERE ($1::TEXT IS NULL OR level = $1)
+              AND ($2::TEXT IS NULL OR category = $2)
+              AND ($3::BIGINT IS NULL OR telegram_id = $3)
+            ORDER BY created_at DESC LIMIT 20
+            """,
+            level, category, telegram_id,
+        )
+    return [dict(row) for row in rows]
+
+
+async def get_subscription_summary() -> dict[str, int]:
+    async with _get_pool().acquire() as connection:
+        row = await connection.fetchrow(
+            """
+            SELECT
+                COUNT(*) FILTER (WHERE status = 'active' AND expires_at > NOW()) AS active,
+                COUNT(*) FILTER (WHERE status = 'active' AND expires_at > NOW() AND expires_at <= NOW() + INTERVAL '3 days') AS expiring,
+                COUNT(*) FILTER (WHERE status = 'expired' OR expires_at <= NOW()) AS expired
+            FROM subscriptions
+            """
+        )
+    return {key: int(row[key] or 0) for key in ("active", "expiring", "expired")}
+
+
+async def get_admin_payments() -> dict[str, Any]:
+    async with _get_pool().acquire() as connection:
+        summary = await connection.fetchrow(
+            """
+            SELECT
+                COALESCE(SUM(amount_kopecks) FILTER (WHERE status = 'succeeded' AND created_at >= CURRENT_DATE), 0) AS today,
+                COALESCE(SUM(amount_kopecks) FILTER (WHERE status = 'succeeded' AND created_at >= DATE_TRUNC('month', NOW())), 0) AS month,
+                COUNT(*) FILTER (WHERE status = 'succeeded') AS succeeded,
+                COUNT(*) FILTER (WHERE status = 'pending') AS pending,
+                COUNT(*) FILTER (WHERE status = 'failed') AS failed,
+                COUNT(*) FILTER (WHERE status = 'refunded') AS refunded
+            FROM payments
+            """
+        )
+        rows = await connection.fetch(
+            """
+            SELECT p.id, p.amount_kopecks, p.method, p.status, p.created_at,
+                   u.telegram_id, u.username, pl.code AS plan_code
+            FROM payments p LEFT JOIN users u ON u.id = p.user_id
+                            LEFT JOIN plans pl ON pl.id = p.plan_id
+            ORDER BY p.created_at DESC LIMIT 15
+            """
+        )
+    return {"summary": dict(summary), "rows": [dict(row) for row in rows]}
+
+
+async def get_promo_summary() -> dict[str, int]:
+    async with _get_pool().acquire() as connection:
+        row = await connection.fetchrow(
+            """
+            SELECT COUNT(*) FILTER (WHERE is_active AND (ends_at IS NULL OR ends_at > NOW())) AS active,
+                   COUNT(*) FILTER (WHERE NOT is_active) AS paused,
+                   COUNT(*) FILTER (WHERE ends_at <= NOW()) AS expired
+            FROM promo_codes
+            """
+        )
+    return {key: int(row[key] or 0) for key in ("active", "paused", "expired")}
+
+
+async def create_promo_code(code: str, reward_type: str, reward_value: int, total_limit: int | None, per_user_limit: int, starts_at: str, ends_at: str | None, plan_code: str | None) -> None:
+    async with _get_pool().acquire() as connection:
+        await connection.execute(
+            """
+            INSERT INTO promo_codes (code, reward_type, reward_value, total_limit, per_user_limit, starts_at, ends_at, plan_id)
+            VALUES ($1, $2, $3, $4, $5, $6::timestamptz, NULLIF($7, '')::timestamptz,
+                    (SELECT id FROM plans WHERE code = NULLIF($8, '')))
+            """,
+            code.upper(), reward_type, reward_value, total_limit, per_user_limit, starts_at, ends_at or "", plan_code or "",
+        )
+
+
+async def get_referral_summary() -> dict[str, int]:
+    async with _get_pool().acquire() as connection:
+        row = await connection.fetchrow(
+            """
+            SELECT
+                COUNT(*) FILTER (WHERE referred_by IS NOT NULL) AS total,
+                COUNT(*) FILTER (WHERE referred_by IS NOT NULL AND created_at >= CURRENT_DATE) AS today,
+                COUNT(*) FILTER (WHERE referred_by IS NOT NULL AND created_at >= DATE_TRUNC('month', NOW())) AS month,
+                (SELECT COALESCE(SUM(amount_kopecks), 0) FROM referral_rewards WHERE status = 'accrued') AS bonuses
+            FROM users
+            """
+        )
+    return {key: int(row[key] or 0) for key in ("total", "today", "month", "bonuses")}
+
+
+async def get_referral_top() -> list[dict[str, Any]]:
+    async with _get_pool().acquire() as connection:
+        rows = await connection.fetch(
+            """
+            SELECT u.telegram_id, u.username, COUNT(invited.id) AS invited
+            FROM users u JOIN users invited ON invited.referred_by = u.id
+            GROUP BY u.id ORDER BY invited DESC LIMIT 10
+            """
+        )
+    return [dict(row) for row in rows]
+
+
+async def get_broadcast_recipients(audience: str) -> list[int]:
+    conditions = {
+        "all": "TRUE",
+        "active": "EXISTS (SELECT 1 FROM subscriptions s WHERE s.user_id = u.id AND s.status = 'active' AND s.expires_at > NOW())",
+        "expiring": "EXISTS (SELECT 1 FROM subscriptions s WHERE s.user_id = u.id AND s.status = 'active' AND s.expires_at BETWEEN NOW() AND NOW() + INTERVAL '3 days')",
+        "none": "NOT EXISTS (SELECT 1 FROM subscriptions s WHERE s.user_id = u.id AND s.status = 'active' AND s.expires_at > NOW())",
+        "referrals": "u.referred_by IS NOT NULL",
+    }
+    condition = conditions.get(audience, conditions["all"])
+    async with _get_pool().acquire() as connection:
+        rows = await connection.fetch(f"SELECT telegram_id FROM users u WHERE is_blocked = FALSE AND {condition}")
+    return [int(row["telegram_id"]) for row in rows]
+
+
+async def create_broadcast(admin_id: int, audience: str, message: str, total_count: int) -> int:
+    async with _get_pool().acquire() as connection:
+        return int(await connection.fetchval(
+            "INSERT INTO broadcasts (admin_telegram_id, audience, message, total_count, status) VALUES ($1, $2, $3, $4, 'running') RETURNING id",
+            admin_id, audience, message, total_count,
+        ))
+
+
+async def finish_broadcast(broadcast_id: int, sent: int, failed: int) -> None:
+    async with _get_pool().acquire() as connection:
+        await connection.execute(
+            "UPDATE broadcasts SET sent_count = $1, failed_count = $2, status = 'completed', completed_at = NOW() WHERE id = $3",
+            sent, failed, broadcast_id,
+        )
+
+
+async def write_admin_log(level: str, category: str, message: str, details: str | None = None, telegram_id: int | None = None) -> None:
+    async with _get_pool().acquire() as connection:
+        await connection.execute(
+            "INSERT INTO admin_logs (level, category, message, details, telegram_id) VALUES ($1, $2, $3, $4, $5)",
+            level, category, message, details, telegram_id,
+        )
