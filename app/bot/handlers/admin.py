@@ -1,9 +1,9 @@
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Awaitable, Callable
 
-from aiogram import Bot, F, Router
+from aiogram import BaseMiddleware, Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -29,6 +29,31 @@ from app.db import (
 
 logger = logging.getLogger(__name__)
 router = Router()
+
+class AdminErrorMiddleware(BaseMiddleware):
+    async def __call__(
+        self,
+        handler: Callable[[Any, dict[str, Any]], Awaitable[Any]],
+        event: Any,
+        data: dict[str, Any],
+    ) -> Any:
+        try:
+            return await handler(event, data)
+        except Exception:
+            logger.exception("Ошибка в административном обработчике")
+            if isinstance(event, CallbackQuery) and event.message:
+                try:
+                    await event.message.edit_text(
+                        "⚠️ Не удалось открыть раздел админ-панели.\n\n"
+                        "Проверьте состояние базы данных и логи сервиса.",
+                        reply_markup=back(),
+                    )
+                except Exception:
+                    logger.exception("Не удалось показать ошибку администратору")
+            return None
+
+
+router.callback_query.middleware(AdminErrorMiddleware())
 
 
 class PromoStates(StatesGroup):
