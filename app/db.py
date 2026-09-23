@@ -313,13 +313,26 @@ async def add_user_balance(
 async def activate_promo_code(
     telegram_id: int,
     promo_code: str,
-) -> bool:
+) -> dict[str, Any] | None:
     async with _get_pool().acquire() as connection:
         async with connection.transaction():
             code = promo_code.strip().upper()
+            user = await connection.fetchrow(
+                """
+                SELECT id, promo_activated, promo_used
+                FROM users
+                WHERE telegram_id = $1
+                FOR UPDATE
+                """,
+                telegram_id,
+            )
+            if user is None or user["promo_activated"]:
+                return None
+
             promo = await connection.fetchrow(
                 """
-                SELECT id, total_limit, per_user_limit
+                  SELECT id, reward_type, reward_value, plan_id,
+                      total_limit, per_user_limit
                 FROM promo_codes
                 WHERE code = $1
                   AND is_active = TRUE
@@ -331,42 +344,62 @@ async def activate_promo_code(
             )
 
             if promo is not None:
-                user_id = await connection.fetchval(
-                    "SELECT id FROM users WHERE telegram_id = $1",
-                    telegram_id,
-                )
-                if user_id is None:
-                    return False
                 used_by_user = await connection.fetchval(
                     "SELECT COUNT(*) FROM promo_usages WHERE promo_id = $1 AND user_id = $2",
-                    promo["id"], user_id,
+                    promo["id"], user["id"],
                 )
                 used_total = await connection.fetchval(
                     "SELECT COUNT(*) FROM promo_usages WHERE promo_id = $1",
                     promo["id"],
                 )
                 if int(used_by_user) >= promo["per_user_limit"]:
-                    return False
+                    return None
                 if promo["total_limit"] is not None and int(used_total) >= promo["total_limit"]:
-                    return False
+                    return None
                 await connection.execute(
                     "INSERT INTO promo_usages (promo_id, user_id) VALUES ($1, $2)",
-                    promo["id"], user_id,
+                    promo["id"], user["id"],
                 )
-            elif code != "NERONEX":
-                return False
+            else:
+                return None
 
             updated = await connection.fetchval(
                 """
                 UPDATE users
-                SET promo_activated = TRUE, promo_used = FALSE
+                SET promo_activated = TRUE,
+                    promo_used = FALSE,
+                    promo_reward_type = $2,
+                    promo_reward_value = $3,
+                    promo_plan_id = $4
                 WHERE telegram_id = $1 AND promo_activated = FALSE
-                RETURNING telegram_id
+                RETURNING telegram_id, promo_reward_type,
+                          promo_reward_value, promo_plan_id
                 """,
                 telegram_id,
+                promo["reward_type"],
+                promo["reward_value"],
+                promo["plan_id"],
             )
 
-    return updated is not None
+    return dict(updated) if updated is not None else None
+
+
+async def get_user_promo(
+    telegram_id: int,
+) -> dict[str, Any] | None:
+    async with _get_pool().acquire() as connection:
+        row = await connection.fetchrow(
+            """
+            SELECT promo_reward_type, promo_reward_value, promo_plan_id
+            FROM users
+            WHERE telegram_id = $1
+              AND promo_activated = TRUE
+              AND promo_used = FALSE
+            """,
+            telegram_id,
+        )
+
+    return dict(row) if row is not None else None
 
 
 async def is_promo_activated(
@@ -425,7 +458,10 @@ async def consume_promo_code(
         updated = await connection.fetchval(
             """
             UPDATE users
-            SET promo_used = TRUE
+            SET promo_used = TRUE,
+                promo_reward_type = NULL,
+                promo_reward_value = NULL,
+                promo_plan_id = NULL
             WHERE telegram_id = $1
               AND promo_activated = TRUE
               AND promo_used = FALSE
@@ -583,6 +619,29 @@ async def get_plan_by_code(
         if row is not None
         else None
     )
+
+
+async def get_active_subscription(
+    telegram_id: int,
+) -> dict[str, Any] | None:
+    async with _get_pool().acquire() as connection:
+        row = await connection.fetchrow(
+            """
+            SELECT s.id, s.started_at, s.expires_at, s.device_limit,
+                   p.code AS plan_code, p.type AS plan_type
+            FROM subscriptions AS s
+            JOIN users AS u ON u.id = s.user_id
+            LEFT JOIN plans AS p ON p.id = s.plan_id
+            WHERE u.telegram_id = $1
+              AND s.status = 'active'
+              AND s.expires_at > NOW()
+            ORDER BY s.expires_at DESC
+            LIMIT 1
+            """,
+            telegram_id,
+        )
+
+    return dict(row) if row is not None else None
 
 
 # ============================================================

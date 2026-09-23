@@ -1,10 +1,11 @@
+import asyncio
 import logging
 import time
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from urllib.parse import quote
 
-from aiogram import Bot, F, Router
+from aiogram import BaseMiddleware, Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
@@ -29,8 +30,10 @@ from app.db import (
     get_active_family_plans,
     get_active_plans_by_device_limit,
     get_active_single_plans,
+    get_active_subscription,
     get_plan_by_code,
     get_user_balance,
+    get_user_promo,
     get_user_referral_code,
     activate_promo_code,
     consume_promo_code,
@@ -41,6 +44,38 @@ from app.db import (
 logger = logging.getLogger(__name__)
 
 router = Router()
+
+
+class SubscriptionGuardMiddleware(BaseMiddleware):
+    async def __call__(
+        self,
+        handler: Any,
+        event: Any,
+        data: dict[str, Any],
+    ) -> Any:
+        if not isinstance(event, CallbackQuery):
+            return await handler(event, data)
+
+        if event.data == CB_CHECK_SUBSCRIPTION:
+            return await handler(event, data)
+
+        if await is_channel_subscribed(
+            event.bot,
+            event.from_user.id,
+        ):
+            return await handler(event, data)
+
+        await event.answer(
+            "Сначала подпишитесь на канал.",
+            show_alert=True,
+        )
+        await show_subscription_gate_after_failed_check(event)
+        return None
+
+
+router.callback_query.middleware(
+    SubscriptionGuardMiddleware()
+)
 
 
 async def safe_callback_answer(
@@ -889,7 +924,7 @@ def build_documents_menu() -> InlineKeyboardMarkup:
 async def has_active_subscription(
     telegram_id: int,
 ) -> bool:
-    return False
+    return await get_active_subscription(telegram_id) is not None
 
 
 # ============================================================
@@ -1227,13 +1262,6 @@ async def promo_code_handler(
 ) -> None:
     promo_code = (message.text or "").strip().upper()
 
-    if promo_code != PROMO_CODE:
-        await state.clear()
-        await message.answer(
-            "❌ Промокод недействителен, истёк, закончился или уже использован."
-        )
-        return
-
     try:
         if await is_promo_activated(message.from_user.id):
             await state.clear()
@@ -1256,10 +1284,29 @@ async def promo_code_handler(
 
     await state.clear()
 
-    if activated:
-        await message.answer(
-            "🎁 Промокод успешно активирован!"
+    if activated is not None:
+        if activated["promo_reward_type"] == "discount":
+            reward_text = (
+                f"Промокод даёт скидку {activated['promo_reward_value']}% "
+                "на одну покупку подписки."
+            )
+        else:
+            reward_text = (
+                f"Промокод даёт {activated['promo_reward_value']} "
+                "бесплатных дней подписки."
+            )
+
+        confirmation = await message.answer(
+            "🎁 Промокод успешно активирован!\n\n"
+            f"{reward_text}"
         )
+        await asyncio.sleep(2)
+        try:
+            await confirmation.delete()
+        except TelegramBadRequest:
+            logger.info(
+                "Не удалось удалить сообщение об активации промокода"
+            )
         return
 
     await message.answer(
@@ -1321,15 +1368,39 @@ async def subscription_handler(
     callback: CallbackQuery,
 ) -> None:
 
-    await callback.answer()
-
-    if callback.message is None:
+    try:
+        subscription = await get_active_subscription(
+            callback.from_user.id
+        )
+    except Exception:
+        logger.exception(
+            "Не удалось загрузить подписку telegram_id=%s",
+            callback.from_user.id,
+        )
+        await callback.answer(
+            "Не удалось загрузить подписку. Попробуйте позже.",
+            show_alert=True,
+        )
         return
 
-    await callback.message.edit_text(
-        "📱 Моя подписка\n\n"
-        "Статус: Нет подписки",
-        reply_markup=build_subscription_menu(),
+    await callback.answer()
+
+    if subscription is None:
+        text = "📱 Моя подписка\n\nСтатус: Нет активной подписки"
+    else:
+        expires_at = subscription["expires_at"].strftime("%d.%m.%Y")
+        text = (
+            "📱 Моя подписка\n\n"
+            "Статус: Активна\n"
+            f"Тариф: {subscription['plan_code'] or 'не указан'}\n"
+            f"Устройства: до {subscription['device_limit']}\n"
+            f"Действует до: {expires_at}"
+        )
+
+    await edit_menu(
+        callback,
+        text,
+        build_subscription_menu(),
     )
 
 
@@ -1437,7 +1508,12 @@ async def topup_amount_handler(
         amount_kopecks_decimal = amount_rub * 100
         amount_kopecks = int(amount_kopecks_decimal)
     except (InvalidOperation, OverflowError, ValueError):
-        amount_rub = None
+        await message.answer(
+            "Не удалось распознать сумму. "
+            "Введите сумму в рублях с точностью до копеек, "
+            "например: 100 или 100,50"
+        )
+        return
 
     if (
         amount_rub is None
@@ -1538,8 +1614,10 @@ async def topup_method_handler(
 )
 async def back_handler(
     callback: CallbackQuery,
+    state: FSMContext,
 ) -> None:
 
+    await state.clear()
     await callback.answer()
 
     if callback.message is None:
@@ -1590,8 +1668,14 @@ async def show_device_plans(
         balance_kopecks = await get_user_balance(
             callback.from_user.id
         )
-        promo_active = await is_promo_activated(
+        promo = await get_user_promo(
             callback.from_user.id,
+        )
+        discount_percent = (
+            int(promo["promo_reward_value"])
+            if promo is not None
+            and promo["promo_reward_type"] == "discount"
+            else 0
         )
 
     except Exception:
@@ -1626,13 +1710,13 @@ async def show_device_plans(
             plans,
             device_limit=device_limit,
             balance_kopecks=balance_kopecks,
-            discount_percent=10 if promo_active else 0,
+            discount_percent=discount_percent,
         ),
         build_plans_menu(
             plans,
             CB_PLAN_PREFIX,
             CB_BACK,
-            discount_percent=10 if promo_active else 0,
+            discount_percent=discount_percent,
         ),
     )
 
@@ -1827,11 +1911,8 @@ async def show_plan_card(
         )
         return
 
-    promo_active = (
-        not renewal
-        and await is_promo_activated(
-            callback.from_user.id,
-        )
+    promo = None if renewal else await get_user_promo(
+        callback.from_user.id,
     )
 
     if (
@@ -1845,12 +1926,21 @@ async def show_plan_card(
         )
         return
 
-    await callback.answer()
-
-    if promo_active:
-        await consume_promo_code(
-            callback.from_user.id,
+    promo_applies = (
+        promo is not None
+        and (
+            promo["promo_plan_id"] is None
+            or promo["promo_plan_id"] == plan["id"]
         )
+    )
+    discount_percent = (
+        int(promo["promo_reward_value"])
+        if promo_applies
+        and promo["promo_reward_type"] == "discount"
+        else 0
+    )
+
+    await callback.answer()
 
     if renewal:
         back_callback = CB_RENEW
@@ -1866,7 +1956,7 @@ async def show_plan_card(
         format_plan_card(
             plan,
             renewal=renewal,
-            discount_percent=10 if promo_active else 0,
+            discount_percent=discount_percent,
         ),
         build_plan_card_menu(
             back_callback

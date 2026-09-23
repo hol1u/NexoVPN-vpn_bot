@@ -22,6 +22,9 @@ CREATE TABLE IF NOT EXISTS users (
     balance_kopecks BIGINT NOT NULL DEFAULT 0,
     promo_activated BOOLEAN NOT NULL DEFAULT FALSE,
     promo_used BOOLEAN NOT NULL DEFAULT FALSE,
+    promo_reward_type TEXT,
+    promo_reward_value INTEGER,
+    promo_plan_id BIGINT,
     last_activity_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     reminder_sent_at TIMESTAMPTZ,
 
@@ -42,12 +45,28 @@ ADD COLUMN IF NOT EXISTS balance_kopecks
 BIGINT NOT NULL DEFAULT 0;
 
 ALTER TABLE users
+ADD COLUMN IF NOT EXISTS is_blocked
+BOOLEAN NOT NULL DEFAULT FALSE;
+
+ALTER TABLE users
 ADD COLUMN IF NOT EXISTS promo_activated
 BOOLEAN NOT NULL DEFAULT FALSE;
 
 ALTER TABLE users
 ADD COLUMN IF NOT EXISTS promo_used
 BOOLEAN NOT NULL DEFAULT FALSE;
+
+ALTER TABLE users
+ADD COLUMN IF NOT EXISTS promo_reward_type
+TEXT;
+
+ALTER TABLE users
+ADD COLUMN IF NOT EXISTS promo_reward_value
+INTEGER;
+
+ALTER TABLE users
+ADD COLUMN IF NOT EXISTS promo_plan_id
+BIGINT;
 
 ALTER TABLE users
 ADD COLUMN IF NOT EXISTS last_activity_at
