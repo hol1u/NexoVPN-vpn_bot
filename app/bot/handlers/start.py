@@ -1168,7 +1168,7 @@ async def promo_handler(
 
     await edit_menu(
         callback,
-        "🎟 Промокод\n\n"
+        "🎫 Промокод\n\n"
         "Введите промокод сообщением в чат:",
         build_plan_card_menu(CB_BACK),
     )

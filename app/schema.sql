@@ -22,6 +22,8 @@ CREATE TABLE IF NOT EXISTS users (
     balance_kopecks BIGINT NOT NULL DEFAULT 0,
     promo_activated BOOLEAN NOT NULL DEFAULT FALSE,
     promo_used BOOLEAN NOT NULL DEFAULT FALSE,
+    last_activity_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    reminder_sent_at TIMESTAMPTZ,
 
     -- Реферальная система
     referral_code   TEXT,
@@ -46,6 +48,14 @@ BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE users
 ADD COLUMN IF NOT EXISTS promo_used
 BOOLEAN NOT NULL DEFAULT FALSE;
+
+ALTER TABLE users
+ADD COLUMN IF NOT EXISTS last_activity_at
+TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+ALTER TABLE users
+ADD COLUMN IF NOT EXISTS reminder_sent_at
+TIMESTAMPTZ;
 
 ALTER TABLE users
 ADD COLUMN IF NOT EXISTS referral_code

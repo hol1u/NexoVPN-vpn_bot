@@ -348,6 +348,39 @@ async def is_promo_activated(
     return bool(activated)
 
 
+async def touch_user_activity(
+    telegram_id: int,
+) -> None:
+    async with _get_pool().acquire() as connection:
+        await connection.execute(
+            """
+            UPDATE users
+            SET last_activity_at = NOW()
+            WHERE telegram_id = $1
+            """,
+            telegram_id,
+        )
+
+
+async def claim_due_reminder_users() -> list[int]:
+    async with _get_pool().acquire() as connection:
+        rows = await connection.fetch(
+            """
+            UPDATE users
+            SET reminder_sent_at = NOW()
+            WHERE is_blocked = FALSE
+              AND last_activity_at <= NOW() - INTERVAL '48 hours'
+              AND (
+                    reminder_sent_at IS NULL
+                    OR reminder_sent_at <= NOW() - INTERVAL '48 hours'
+              )
+            RETURNING telegram_id
+            """
+        )
+
+    return [int(row["telegram_id"]) for row in rows]
+
+
 async def consume_promo_code(
     telegram_id: int,
 ) -> bool:
