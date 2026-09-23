@@ -1,5 +1,6 @@
 import logging
 import time
+from decimal import Decimal, InvalidOperation
 from typing import Any
 from urllib.parse import quote
 
@@ -53,6 +54,8 @@ CB_TOPUP = "menu:topup"
 CB_FAMILY = "menu:family"
 CB_INVITE = "menu:invite"
 CB_HELP = "menu:help"
+CB_PROMO = "menu:promo"
+CB_DOCUMENTS = "menu:documents"
 CB_BACK = "menu:back"
 CB_CANCEL = "balance:cancel"
 CB_ADMIN_STATS = "admin:stats"
@@ -110,11 +113,11 @@ HELP_TEXT = (
     "ℹ️ Помощь\n\n"
     "Здесь ты найдёшь ответы на основные вопросы "
     "по NexoVPN.\n\n"
-    "🔹 Как подключить VPN?\n"
-    "Выбери «🍁 Подключить VPN», затем подходящий тариф.\n\n"
+    "🔹 Как купить подписку?\n"
+    "Выбери «🍁 Купить подписку», затем подходящий тариф.\n\n"
     "🔹 Сколько устройств можно подключить?\n"
     "Обычная подписка — 1 устройство.\n"
-    "Семейная подписка — до 5 устройств.\n\n"
+    "Семейная подписка — до 6 устройств.\n\n"
     "🔹 Как пополнить баланс?\n"
     "Открой «💰 Баланс» → «💸 Пополнить баланс» "
     "и следуй инструкции.\n\n"
@@ -222,7 +225,7 @@ def build_main_menu(
     rows = [
         [
             InlineKeyboardButton(
-                text="🍁 Подключить VPN",
+                text="🍁 Купить подписку",
                 callback_data=CB_CONNECT,
             )
         ],
@@ -230,11 +233,7 @@ def build_main_menu(
             InlineKeyboardButton(
                 text="📱 Моя подписка",
                 callback_data=CB_SUBSCRIPTION,
-            ),
-            InlineKeyboardButton(
-                text="💳 Продлить подписку",
-                callback_data=CB_RENEW,
-            ),
+            )
         ],
         [
             InlineKeyboardButton(
@@ -242,15 +241,9 @@ def build_main_menu(
                 callback_data=CB_BALANCE,
             ),
             InlineKeyboardButton(
-                text="💸 Пополнить баланс",
-                callback_data=CB_TOPUP,
+                text="🎟 Промокод",
+                callback_data=CB_PROMO,
             ),
-        ],
-        [
-            InlineKeyboardButton(
-                text="👨‍👩‍👧 Семейная подписка",
-                callback_data=CB_FAMILY,
-            )
         ],
         [
             InlineKeyboardButton(
@@ -262,6 +255,12 @@ def build_main_menu(
             InlineKeyboardButton(
                 text="ℹ️ Помощь",
                 callback_data=CB_HELP,
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="📄 Документы",
+                callback_data=CB_DOCUMENTS,
             )
         ],
     ]
@@ -352,8 +351,14 @@ def build_subscription_menu() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="🍁 Купить VPN",
+                    text="🍁 Купить подписку",
                     callback_data=CB_CONNECT,
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="💳 Продлить подписку",
+                    callback_data=CB_RENEW,
                 )
             ],
             [
@@ -593,6 +598,29 @@ def build_single_plans_text(
     )
 
 
+def build_purchase_plans_text(
+    plans: list[dict[str, Any]],
+) -> str:
+    lines = []
+
+    for plan in plans:
+        if plan["type"] == "family":
+            title = (
+                f"{FAMILY_TITLE_EMOJI} Семейный тариф"
+            )
+            devices = devices_up_to(plan["device_limit"])
+        else:
+            title = "🌐 Личный тариф"
+            devices = devices_up_to(plan["device_limit"])
+
+        lines.append(
+            f"{title} · {format_plan_line(plan)}"
+            f" · {devices}"
+        )
+
+    return "🍁 Доступные подписки\n\n" + "\n".join(lines)
+
+
 def build_family_plans_text(
     plans: list[dict[str, Any]],
 ) -> str:
@@ -727,7 +755,7 @@ def build_no_subscription_menu() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="🍁 Купить VPN",
+                    text="🍁 Купить подписку",
                     callback_data=CB_CONNECT,
                 )
             ],
@@ -1072,6 +1100,40 @@ async def help_handler(
     )
 
 
+@router.callback_query(
+    F.data == CB_PROMO
+)
+async def promo_handler(
+    callback: CallbackQuery,
+) -> None:
+
+    await callback.answer()
+
+    await edit_menu(
+        callback,
+        "🎟 Промокод\n\n"
+        "Раздел пока находится в разработке.",
+        build_plan_card_menu(CB_BACK),
+    )
+
+
+@router.callback_query(
+    F.data == CB_DOCUMENTS
+)
+async def documents_handler(
+    callback: CallbackQuery,
+) -> None:
+
+    await callback.answer()
+
+    await edit_menu(
+        callback,
+        "📄 Документы\n\n"
+        "Раздел пока находится в разработке.",
+        build_plan_card_menu(CB_BACK),
+    )
+
+
 # ============================================================
 # SUBSCRIPTION
 # ============================================================
@@ -1194,25 +1256,25 @@ async def topup_amount_handler(
         .replace(",", ".")
     )
 
-    amount_rub: float | None
-
     try:
-        amount_rub = float(raw_amount)
-
-    except ValueError:
+        amount_rub = Decimal(raw_amount)
+        amount_kopecks_decimal = amount_rub * 100
+        amount_kopecks = int(amount_kopecks_decimal)
+    except (InvalidOperation, OverflowError, ValueError):
         amount_rub = None
 
-    if amount_rub is None or amount_rub <= 0:
+    if (
+        amount_rub is None
+        or not amount_rub.is_finite()
+        or amount_rub <= 0
+        or amount_kopecks_decimal != amount_kopecks
+    ):
         await message.answer(
             "Не удалось распознать сумму. "
-            "Введите число рублей, "
-            "например: 100"
+            "Введите сумму в рублях с точностью до копеек, "
+            "например: 100 или 100,50"
         )
         return
-
-    amount_kopecks = round(
-        amount_rub * 100
-    )
 
     data = await state.get_data()
     prompt_message_id = data.get(
@@ -1330,13 +1392,16 @@ async def connect_handler(
 ) -> None:
 
     try:
-        plans = (
+        single_plans = (
             await get_active_single_plans()
+        )
+        family_plans = (
+            await get_active_family_plans()
         )
 
     except Exception:
         logger.exception(
-            "Не удалось загрузить обычные тарифы"
+            "Не удалось загрузить тарифы для покупки"
         )
 
         await callback.answer(
@@ -1345,6 +1410,8 @@ async def connect_handler(
             show_alert=True,
         )
         return
+
+    plans = single_plans + family_plans
 
     await callback.answer()
 
@@ -1361,7 +1428,7 @@ async def connect_handler(
 
     await edit_menu(
         callback,
-        build_single_plans_text(
+        build_purchase_plans_text(
             plans
         ),
         build_plans_menu(

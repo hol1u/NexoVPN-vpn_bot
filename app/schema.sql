@@ -161,14 +161,14 @@ VALUES
     ),
 
 
-    -- Family: до 5 устройств
+    -- Family: до 6 устройств
 
     (
         'family_1m',
         'family',
         30,
         36900,
-        5
+        6
     ),
 
     (
@@ -176,7 +176,7 @@ VALUES
         'family',
         90,
         94900,
-        5
+        6
     ),
 
     (
@@ -184,7 +184,7 @@ VALUES
         'family',
         180,
         164900,
-        5
+        6
     ),
 
     (
@@ -192,7 +192,14 @@ VALUES
         'family',
         365,
         259000,
-        5
+        6
     )
 
 ON CONFLICT (code) DO NOTHING;
+
+-- Обновляем семейные тарифы, созданные предыдущей версией схемы.
+
+UPDATE plans
+SET device_limit = 6
+WHERE type = 'family'
+    AND device_limit = 5;
