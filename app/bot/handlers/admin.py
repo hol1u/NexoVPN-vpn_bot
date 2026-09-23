@@ -121,6 +121,42 @@ def short_dt(value: Any) -> str:
     return value.astimezone(timezone.utc).strftime("%d.%m %H:%M") if value else "-"
 
 
+async def delete_quietly(message: Message) -> None:
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+
+async def delete_prompt(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    prompt_id = data.get("prompt_message_id")
+    if prompt_id:
+        try:
+            await message.bot.delete_message(message.chat.id, prompt_id)
+        except Exception:
+            pass
+    await delete_quietly(message)
+
+
+async def prompt(message: Message, state: FSMContext, text: str) -> None:
+    data = await state.get_data()
+    old_prompt_id = data.get("prompt_message_id")
+    if old_prompt_id:
+        try:
+            await message.bot.delete_message(message.chat.id, old_prompt_id)
+        except Exception:
+            pass
+    sent = await message.answer(text)
+    await state.update_data(prompt_message_id=sent.message_id)
+
+
+async def temporary_message(message: Message, text: str) -> None:
+    sent = await message.answer(text)
+    await asyncio.sleep(2)
+    await delete_quietly(sent)
+
+
 def promo_list_markup(rows: list[dict[str, Any]], mode: str) -> InlineKeyboardMarkup:
     buttons = []
     for row in rows:
@@ -338,7 +374,7 @@ async def admin_promo_actions(callback: CallbackQuery, state: FSMContext) -> Non
     action = parts[-1]
     if action == 'create':
         await state.set_state(PromoStates.code)
-        await callback.message.answer('Введите код промокода:')
+        await prompt(callback.message, state, 'Введите код промокода:')
         return
     if action == 'stats':
         rows = await get_promo_codes("all")
@@ -359,7 +395,7 @@ async def admin_promo_actions(callback: CallbackQuery, state: FSMContext) -> Non
         await show(callback, "\n".join(lines)[:3900], promo_list_markup(rows, action))
         return
     if len(parts) >= 4 and parts[-2] == "toggle":
-        promo_id = int(parts[-2])
+        promo_id = int(parts[-1])
         rows = await get_promo_codes("all")
         current = next((row for row in rows if row["id"] == promo_id), None)
         if current:
@@ -368,7 +404,7 @@ async def admin_promo_actions(callback: CallbackQuery, state: FSMContext) -> Non
         await show(callback, "✅ Состояние промокода обновлено.", back("admin:promos"))
         return
     if len(parts) >= 4 and parts[-2] == "delete":
-        promo_id = int(parts[-2])
+        promo_id = int(parts[-1])
         await show(callback, "⚠️ Вы уверены, что хотите удалить промокод?", kb([
             [("✅ Да", f"admin:promo:delete_confirm:{promo_id}"), ("❌ Отмена", "admin:promos")]
         ]))
@@ -379,50 +415,59 @@ async def admin_promo_actions(callback: CallbackQuery, state: FSMContext) -> Non
 async def promo_code(message: Message, state: FSMContext) -> None:
     if not is_admin(message.from_user.id):
         return
+    await delete_prompt(message, state)
     await state.update_data(code=message.text.strip().upper())
     await state.set_state(PromoStates.reward_type)
-    await message.answer('Тип награды: напишите «скидка» или «дни».')
+    await prompt(message, state, 'Тип награды: напишите «скидка» или «дни».')
 
 
 @router.message(PromoStates.reward_type)
 async def promo_type(message: Message, state: FSMContext) -> None:
     value = message.text.strip().lower()
     if value not in {'скидка', 'дни'}:
-        await message.answer('Введите «скидка» или «дни».')
+        await delete_quietly(message)
+        await temporary_message(message, 'Введите «скидка» или «дни».')
         return
+    await delete_prompt(message, state)
     await state.update_data(reward_type='discount' if value == 'скидка' else 'free_days')
     await state.set_state(PromoStates.reward_value)
-    await message.answer('Введите размер награды числом: процент или количество дней.')
+    await prompt(message, state, 'Введите размер награды числом: процент или количество дней.')
 
 
 @router.message(PromoStates.reward_value)
 async def promo_value(message: Message, state: FSMContext) -> None:
     if not message.text.isdigit() or int(message.text) <= 0:
-        await message.answer('Нужно положительное целое число.')
+        await delete_quietly(message)
+        await temporary_message(message, 'Нужно положительное целое число.')
         return
+    await delete_prompt(message, state)
     await state.update_data(reward_value=int(message.text))
     await state.set_state(PromoStates.total_limit)
-    await message.answer('Общий лимит использований, 0 если без лимита:')
+    await prompt(message, state, 'Общий лимит использований, 0 если без лимита:')
 
 
 @router.message(PromoStates.total_limit)
 async def promo_total(message: Message, state: FSMContext) -> None:
     if not message.text.isdigit():
-        await message.answer('Введите число.')
+        await delete_quietly(message)
+        await temporary_message(message, 'Введите число.')
         return
+    await delete_prompt(message, state)
     await state.update_data(total_limit=int(message.text) or None)
     await state.set_state(PromoStates.per_user_limit)
-    await message.answer('Лимит на пользователя:')
+    await prompt(message, state, 'Лимит на пользователя:')
 
 
 @router.message(PromoStates.per_user_limit)
 async def promo_per_user(message: Message, state: FSMContext) -> None:
     if not message.text.isdigit() or int(message.text) < 1:
-        await message.answer('Введите положительное число.')
+        await delete_quietly(message)
+        await temporary_message(message, 'Введите положительное число.')
         return
+    await delete_prompt(message, state)
     await state.update_data(per_user_limit=int(message.text))
     await state.set_state(PromoStates.starts_at)
-    await message.answer('Дата начала в ISO 8601 или «сейчас». Пример: 2026-09-30T23:59:59+00:00')
+    await prompt(message, state, 'Дата начала в ISO 8601 или «сейчас». Пример: 2026-09-30T23:59:59+00:00')
 
 
 @router.message(PromoStates.starts_at)
@@ -434,11 +479,13 @@ async def promo_start(message: Message, state: FSMContext) -> None:
         try:
             value = datetime.fromisoformat(raw_value.replace('Z', '+00:00')).isoformat()
         except ValueError:
-            await message.answer('Неверная дата. Используйте ISO 8601, например: 2026-09-30T23:59:59+00:00')
+            await delete_quietly(message)
+            await temporary_message(message, 'Неверная дата. Используйте ISO 8601, например: 2026-09-30T23:59:59+00:00')
             return
+    await delete_prompt(message, state)
     await state.update_data(starts_at=value)
     await state.set_state(PromoStates.ends_at)
-    await message.answer('Дата окончания в ISO 8601 или «нет». Пример: 2026-10-30T23:59:59+00:00')
+    await prompt(message, state, 'Дата окончания в ISO 8601 или «нет». Пример: 2026-10-30T23:59:59+00:00')
 
 
 @router.message(PromoStates.ends_at)
@@ -450,26 +497,29 @@ async def promo_end(message: Message, state: FSMContext) -> None:
         try:
             value = datetime.fromisoformat(raw_value.replace('Z', '+00:00')).isoformat()
         except ValueError:
-            await message.answer('Неверная дата. Используйте ISO 8601 или напишите «нет».')
+            await delete_quietly(message)
+            await temporary_message(message, 'Неверная дата. Используйте ISO 8601 или напишите «нет».')
             return
+    await delete_prompt(message, state)
     await state.update_data(ends_at=value)
     await state.set_state(PromoStates.plan_code)
-    await message.answer('Код тарифа из plans или «все»:')
+    await prompt(message, state, 'Код тарифа из plans или «все»:')
 
 
 @router.message(PromoStates.plan_code)
 async def promo_plan(message: Message, state: FSMContext) -> None:
+    await delete_prompt(message, state)
     data = await state.get_data()
     plan_code = None if message.text.strip().lower() == 'все' else message.text.strip()
     try:
         await create_promo_code(code=data['code'], reward_type=data['reward_type'], reward_value=data['reward_value'], total_limit=data['total_limit'], per_user_limit=data['per_user_limit'], starts_at=data['starts_at'], ends_at=data['ends_at'], plan_code=plan_code)
     except Exception:
         logger.exception('Не удалось создать промокод')
-        await message.answer('Не удалось создать промокод. Проверьте код и даты.')
+        await temporary_message(message, 'Не удалось создать промокод. Проверьте код и даты.')
         return
     await state.clear()
     await write_admin_log('event', 'admin', f"Создан промокод {data['code']}", telegram_id=message.from_user.id)
-    await message.answer('✅ Промокод создан.', reply_markup=back('admin:promos'))
+    await temporary_message(message, '✅ Промокод создан.')
 
 
 @router.callback_query(F.data == 'admin:referrals')
@@ -638,7 +688,7 @@ async def admin_plan_edit_start(callback: CallbackQuery, state: FSMContext) -> N
     plan_id = int((callback.data or '').rsplit(':', 1)[-1])
     await state.update_data(plan_id=plan_id)
     await state.set_state(PlanStates.price)
-    await callback.message.answer('Введите новую цену в рублях, например 169:')
+    await prompt(callback.message, state, 'Введите новую цену в рублях, например 169:')
 
 
 @router.message(PlanStates.price)
@@ -648,33 +698,40 @@ async def admin_plan_price(message: Message, state: FSMContext) -> None:
     try:
         price_kopecks = int(round(float(message.text.replace(',', '.')) * 100))
     except (ValueError, AttributeError):
-        await message.answer('Введите положительную цену, например 169.')
+        await delete_quietly(message)
+        await temporary_message(message, 'Введите положительную цену, например 169.')
         return
     if price_kopecks <= 0:
-        await message.answer('Цена должна быть больше нуля.')
+        await delete_quietly(message)
+        await temporary_message(message, 'Цена должна быть больше нуля.')
         return
+    await delete_prompt(message, state)
     await state.update_data(price_kopecks=price_kopecks)
     await state.set_state(PlanStates.duration)
-    await message.answer('Введите срок тарифа в днях:')
+    await prompt(message, state, 'Введите срок тарифа в днях:')
 
 
 @router.message(PlanStates.duration)
 async def admin_plan_duration(message: Message, state: FSMContext) -> None:
     if not message.text.isdigit() or int(message.text) <= 0:
-        await message.answer('Введите положительное количество дней.')
+        await delete_quietly(message)
+        await temporary_message(message, 'Введите положительное количество дней.')
         return
+    await delete_prompt(message, state)
     await state.update_data(duration_days=int(message.text))
     await state.set_state(PlanStates.devices)
-    await message.answer('Введите лимит устройств:')
+    await prompt(message, state, 'Введите лимит устройств:')
 
 
 @router.message(PlanStates.devices)
 async def admin_plan_devices(message: Message, state: FSMContext) -> None:
     if not message.text.isdigit() or int(message.text) <= 0:
-        await message.answer('Введите положительный лимит устройств.')
+        await delete_quietly(message)
+        await temporary_message(message, 'Введите положительный лимит устройств.')
         return
+    await delete_prompt(message, state)
     data = await state.get_data()
     await update_plan(data['plan_id'], data['duration_days'], data['price_kopecks'], int(message.text))
     await state.clear()
     await write_admin_log('event', 'admin', f"Изменён тариф #{data['plan_id']}", telegram_id=message.from_user.id)
-    await message.answer('✅ Тариф обновлён.', reply_markup=back('admin:settings:plans'))
+    await temporary_message(message, '✅ Тариф обновлён.')

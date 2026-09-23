@@ -766,7 +766,7 @@ async def create_promo_code(code: str, reward_type: str, reward_value: int, tota
         await connection.execute(
             """
             INSERT INTO promo_codes (code, reward_type, reward_value, total_limit, per_user_limit, starts_at, ends_at, plan_id)
-            VALUES ($1, $2, $3, $4, $5, $6::timestamptz, NULLIF($7, '')::timestamptz,
+            VALUES ($1, $2, $3, $4, $5, ($6::TEXT)::timestamptz, NULLIF($7::TEXT, '')::timestamptz,
                     (SELECT id FROM plans WHERE code = NULLIF($8, '')))
             """,
             code.upper(), reward_type, reward_value, total_limit, per_user_limit, starts_at, ends_at or "", plan_code or "",
