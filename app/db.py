@@ -607,30 +607,62 @@ async def get_subscription_summary() -> dict[str, int]:
     return {key: int(row[key] or 0) for key in ("active", "expiring", "expired")}
 
 
-async def get_admin_payments() -> dict[str, Any]:
+async def get_admin_payments(filter_key: str | None = None) -> dict[str, Any]:
+    periods = {
+        "today": "p.created_at >= CURRENT_DATE",
+        "week": "p.created_at >= NOW() - INTERVAL '7 days'",
+        "month": "p.created_at >= DATE_TRUNC('month', NOW())",
+    }
+    statuses = {value: f"p.status = '{value}'" for value in ("succeeded", "pending", "failed", "refunded")}
+    condition = periods.get(filter_key, statuses.get(filter_key, "TRUE"))
     async with _get_pool().acquire() as connection:
         summary = await connection.fetchrow(
-            """
+            f"""
             SELECT
-                COALESCE(SUM(amount_kopecks) FILTER (WHERE status = 'succeeded' AND created_at >= CURRENT_DATE), 0) AS today,
-                COALESCE(SUM(amount_kopecks) FILTER (WHERE status = 'succeeded' AND created_at >= DATE_TRUNC('month', NOW())), 0) AS month,
-                COUNT(*) FILTER (WHERE status = 'succeeded') AS succeeded,
-                COUNT(*) FILTER (WHERE status = 'pending') AS pending,
-                COUNT(*) FILTER (WHERE status = 'failed') AS failed,
-                COUNT(*) FILTER (WHERE status = 'refunded') AS refunded
-            FROM payments
+                COALESCE(SUM(p.amount_kopecks) FILTER (WHERE p.status = 'succeeded' AND p.created_at >= CURRENT_DATE), 0) AS today,
+                COALESCE(SUM(p.amount_kopecks) FILTER (WHERE p.status = 'succeeded' AND p.created_at >= DATE_TRUNC('month', NOW())), 0) AS month,
+                COUNT(*) FILTER (WHERE p.status = 'succeeded') AS succeeded,
+                COUNT(*) FILTER (WHERE p.status = 'pending') AS pending,
+                COUNT(*) FILTER (WHERE p.status = 'failed') AS failed,
+                COUNT(*) FILTER (WHERE p.status = 'refunded') AS refunded
+            FROM payments p WHERE {condition}
             """
         )
         rows = await connection.fetch(
-            """
+            f"""
             SELECT p.id, p.amount_kopecks, p.method, p.status, p.created_at,
                    u.telegram_id, u.username, pl.code AS plan_code
             FROM payments p LEFT JOIN users u ON u.id = p.user_id
                             LEFT JOIN plans pl ON pl.id = p.plan_id
+            WHERE {condition}
             ORDER BY p.created_at DESC LIMIT 15
             """
         )
     return {"summary": dict(summary), "rows": [dict(row) for row in rows]}
+
+
+async def set_plan_active(plan_id: int, active: bool) -> None:
+    async with _get_pool().acquire() as connection:
+        await connection.execute("UPDATE plans SET is_active = $1 WHERE id = $2", active, plan_id)
+
+
+async def update_plan(plan_id: int, duration_days: int, price_kopecks: int, device_limit: int) -> None:
+    async with _get_pool().acquire() as connection:
+        await connection.execute(
+            "UPDATE plans SET duration_days = $1, price_kopecks = $2, device_limit = $3 WHERE id = $4",
+            duration_days,
+            price_kopecks,
+            device_limit,
+            plan_id,
+        )
+
+
+async def get_all_plans() -> list[dict[str, Any]]:
+    async with _get_pool().acquire() as connection:
+        rows = await connection.fetch(
+            "SELECT id, code, type, duration_days, price_kopecks, device_limit, is_active FROM plans ORDER BY type, duration_days, device_limit"
+        )
+    return [dict(row) for row in rows]
 
 
 async def get_promo_summary() -> dict[str, int]:
@@ -644,6 +676,89 @@ async def get_promo_summary() -> dict[str, int]:
             """
         )
     return {key: int(row[key] or 0) for key in ("active", "paused", "expired")}
+
+
+async def get_promo_codes(mode: str = "active") -> list[dict[str, Any]]:
+    conditions = {
+        "active": "is_active AND (ends_at IS NULL OR ends_at > NOW())",
+        "paused": "NOT is_active",
+        "expired": "ends_at IS NOT NULL AND ends_at <= NOW()",
+    }
+    condition = conditions.get(mode, "TRUE")
+    async with _get_pool().acquire() as connection:
+        rows = await connection.fetch(
+            f"""
+            SELECT p.id, p.code, p.reward_type, p.reward_value,
+                   p.total_limit, p.per_user_limit, p.starts_at, p.ends_at,
+                   p.is_active, pl.code AS plan_code, COUNT(u.id) AS uses
+            FROM promo_codes p
+            LEFT JOIN plans pl ON pl.id = p.plan_id
+            LEFT JOIN promo_usages u ON u.promo_id = p.id
+            WHERE {condition}
+            GROUP BY p.id, pl.code
+            ORDER BY p.created_at DESC
+            LIMIT 30
+            """
+        )
+    return [dict(row) for row in rows]
+
+
+async def set_promo_active(promo_id: int, active: bool) -> None:
+    async with _get_pool().acquire() as connection:
+        await connection.execute(
+            "UPDATE promo_codes SET is_active = $1 WHERE id = $2",
+            active,
+            promo_id,
+        )
+
+
+async def delete_promo_code(promo_id: int) -> None:
+    async with _get_pool().acquire() as connection:
+        await connection.execute("DELETE FROM promo_codes WHERE id = $1", promo_id)
+
+
+async def get_subscription_list(mode: str = "all") -> list[dict[str, Any]]:
+    conditions = {
+        "active": "s.status = 'active' AND s.expires_at > NOW()",
+        "expiring": "s.status = 'active' AND s.expires_at BETWEEN NOW() AND NOW() + INTERVAL '3 days'",
+        "expired": "s.status <> 'active' OR s.expires_at <= NOW()",
+    }
+    condition = conditions.get(mode, "TRUE")
+    async with _get_pool().acquire() as connection:
+        rows = await connection.fetch(
+            f"""
+            SELECT s.id, u.telegram_id, u.username, p.code AS plan_code,
+                   p.type AS plan_type, s.started_at, s.expires_at,
+                   s.status, s.device_limit
+            FROM subscriptions s
+            JOIN users u ON u.id = s.user_id
+            LEFT JOIN plans p ON p.id = s.plan_id
+            WHERE {condition}
+            ORDER BY s.expires_at DESC
+            LIMIT 30
+            """
+        )
+    return [dict(row) for row in rows]
+
+
+async def cancel_subscription(subscription_id: int) -> None:
+    async with _get_pool().acquire() as connection:
+        await connection.execute(
+            "UPDATE subscriptions SET status = 'cancelled' WHERE id = $1",
+            subscription_id,
+        )
+
+
+async def get_broadcast_history() -> list[dict[str, Any]]:
+    async with _get_pool().acquire() as connection:
+        rows = await connection.fetch(
+            """
+            SELECT id, audience, total_count, sent_count, failed_count,
+                   status, created_at, completed_at
+            FROM broadcasts ORDER BY created_at DESC LIMIT 20
+            """
+        )
+    return [dict(row) for row in rows]
 
 
 async def create_promo_code(code: str, reward_type: str, reward_value: int, total_limit: int | None, per_user_limit: int, starts_at: str, ends_at: str | None, plan_code: str | None) -> None:
@@ -680,6 +795,33 @@ async def get_referral_top() -> list[dict[str, Any]]:
             SELECT u.telegram_id, u.username, COUNT(invited.id) AS invited
             FROM users u JOIN users invited ON invited.referred_by = u.id
             GROUP BY u.id ORDER BY invited DESC LIMIT 10
+            """
+        )
+    return [dict(row) for row in rows]
+
+
+async def get_referral_invites() -> list[dict[str, Any]]:
+    async with _get_pool().acquire() as connection:
+        rows = await connection.fetch(
+            """
+            SELECT invited.telegram_id AS invited_id, invited.username AS invited_username,
+                   inviter.telegram_id AS inviter_id, inviter.username AS inviter_username,
+                   invited.referred_at
+            FROM users invited JOIN users inviter ON inviter.id = invited.referred_by
+            ORDER BY invited.referred_at DESC LIMIT 30
+            """
+        )
+    return [dict(row) for row in rows]
+
+
+async def get_referral_rewards() -> list[dict[str, Any]]:
+    async with _get_pool().acquire() as connection:
+        rows = await connection.fetch(
+            """
+            SELECT r.id, r.amount_kopecks, r.status, r.created_at,
+                   u.telegram_id AS referrer_id
+            FROM referral_rewards r JOIN users u ON u.id = r.referrer_id
+            ORDER BY r.created_at DESC LIMIT 30
             """
         )
     return [dict(row) for row in rows]

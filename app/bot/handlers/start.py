@@ -26,7 +26,6 @@ from app.config import (
 from app.db import (
     check_db,
     count_referrals,
-    count_users,
     get_active_family_plans,
     get_active_plans_by_device_limit,
     get_active_single_plans,
@@ -1881,49 +1880,6 @@ async def renew_plan_selected_handler(
         callback,
         code=code,
         renewal=True,
-    )
-
-
-# ============================================================
-# ADMIN
-# ============================================================
-
-@router.callback_query(
-    F.data == CB_ADMIN_STATS
-)
-async def admin_stats_handler(
-    callback: CallbackQuery,
-    bot: Bot,
-) -> None:
-
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer()
-        return
-
-    try:
-        total_users = await count_users()
-
-    except Exception:
-        logger.exception(
-            "Не удалось получить статистику"
-        )
-
-        await callback.answer(
-            "Не удалось получить статистику. "
-            "Попробуйте позже.",
-            show_alert=True,
-        )
-        return
-
-    await callback.answer()
-
-    await bot.send_message(
-        chat_id=callback.from_user.id,
-        text=(
-            "📊 Админ-статистика\n\n"
-            "Всего зарегистрировано пользователей: "
-            f"{total_users}"
-        ),
     )
 
 
