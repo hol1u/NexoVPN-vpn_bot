@@ -630,26 +630,16 @@ def build_single_plans_text(
 
 def build_purchase_plans_text(
     plans: list[dict[str, Any]],
+    device_limit: int,
+    balance_kopecks: int,
     discount_percent: int = 0,
 ) -> str:
-    lines = []
-
-    for plan in plans:
-        if plan["type"] == "family":
-            title = (
-                f"{FAMILY_TITLE_EMOJI} Семейный тариф"
-            )
-            devices = devices_up_to(plan["device_limit"])
-        else:
-            title = "🌐 Личный тариф"
-            devices = devices_up_to(plan["device_limit"])
-
-        lines.append(
-            f"{title} · {format_plan_line(plan, discount_percent)}"
-            f" · {devices}"
-        )
-
-    return "💎 Доступные подписки\n\n" + "\n".join(lines)
+    return (
+        "🗓 Выберите период подписки\n\n"
+        f"💰 Ваш баланс: {format_balance(balance_kopecks)} ₽\n"
+        f"📱 В стоимость входит: до {device_limit} устройств\n"
+        "📊 Трафик: 150 ГБ/мес (сбрасывается ежемесячно)"
+    )
 
 
 def build_device_choice_menu() -> InlineKeyboardMarkup:
@@ -771,6 +761,7 @@ def build_plans_menu(
     plans: list[dict[str, Any]],
     prefix: str,
     back_callback: str,
+    discount_percent: int = 0,
 ) -> InlineKeyboardMarkup:
 
     buttons = []
@@ -782,7 +773,9 @@ def build_plans_menu(
             InlineKeyboardButton(
                 text=(
                     f"{plan_emoji(months)} "
-                    f"{months_label(months)}"
+                    f"{months_label(months)} — "
+                    f"{format_price(discounted_price(plan['price_kopecks'], discount_percent))}"
+                    + (f" (-{discount_percent}%)" if discount_percent else "")
                 ),
                 callback_data=(
                     f"{prefix}{plan['code']}"
@@ -791,22 +784,14 @@ def build_plans_menu(
         )
 
     rows = [
-        buttons[i:i + 2]
-        for i in range(
-            0,
-            len(buttons),
-            2,
-        )
-    ]
-
-    rows.append(
         [
             InlineKeyboardButton(
-                text="🎁 Пробные 3 дня",
+                text="🎁 3 дня бесплатно",
                 callback_data=CB_TRIAL,
             )
         ]
-    )
+    ] + [[button] for button in buttons]
+
     rows.append(
         [
             build_back_button(
@@ -1530,6 +1515,12 @@ async def show_device_plans(
         plans = await get_active_plans_by_device_limit(
             device_limit
         )
+        balance_kopecks = await get_user_balance(
+            callback.from_user.id
+        )
+        promo_active = await is_promo_activated(
+            callback.from_user.id,
+        )
 
     except Exception:
         logger.exception(
@@ -1543,10 +1534,6 @@ async def show_device_plans(
             show_alert=True,
         )
         return
-
-    promo_active = await is_promo_activated(
-        callback.from_user.id,
-    )
 
     await callback.answer()
 
@@ -1565,12 +1552,15 @@ async def show_device_plans(
         callback,
         build_purchase_plans_text(
             plans,
+            device_limit=device_limit,
+            balance_kopecks=balance_kopecks,
             discount_percent=10 if promo_active else 0,
         ),
         build_plans_menu(
             plans,
             CB_PLAN_PREFIX,
             CB_BACK,
+            discount_percent=10 if promo_active else 0,
         ),
     )
 
