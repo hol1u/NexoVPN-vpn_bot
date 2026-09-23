@@ -280,6 +280,7 @@ async def admin_stats(callback: CallbackQuery) -> None:
     if not await guarded(callback):
         return
     data = await get_admin_stats("today")
+    referrals = await get_referral_summary()
     text = (
         '📊 Статистика\n\n'
         f"👥 Всего пользователей: {data['total_users']}\n"
@@ -290,7 +291,9 @@ async def admin_stats(callback: CallbackQuery) -> None:
         f"⏳ Истекают в ближайшие 3 дня: {data['expiring_subscriptions']}\n\n"
         f"💰 Выручка за сегодня: {money(data['revenue_today'])}\n"
         f"💰 Выручка за месяц: {money(data['revenue_month'])}\n\n"
-        f"👥 Новых пользователей сегодня: {data['new_users_today']}"
+        f"👥 Новых пользователей сегодня: {data['new_users_today']}\n"
+        f"🎁 Пришло по рефералам сегодня: {referrals['today']}\n"
+        f"👥 Всего приглашено: {referrals['total']}"
     )
     await show(callback, text, back('admin:menu'))
 
@@ -590,10 +593,7 @@ async def promo_plan(message: Message, state: FSMContext) -> None:
 async def admin_referrals(callback: CallbackQuery) -> None:
     if not await guarded(callback):
         return
-    data = await get_referral_summary()
-    await show(callback, f"🎁 Реферальная система\n\n👥 Всего приглашено: {data['total']}\n🆕 За сегодня: {data['today']}\n📅 За месяц: {data['month']}\n💰 Начислено бонусов: {money(data['bonuses'])}", kb([
-        [('🏆 Топ рефералов', 'admin:referrals:top'), ('👥 Все приглашения', 'admin:referrals:all')], [('💰 Начисления', 'admin:referrals:rewards'), ('⚙️ Настройки', 'admin:referrals:settings')], [('⬅️ Назад', 'admin:menu')],
-    ]))
+    await render_communications(callback)
 
 
 @router.callback_query(F.data.startswith('admin:referrals:'))
@@ -614,7 +614,7 @@ async def admin_referral_actions(callback: CallbackQuery) -> None:
         text = '💰 Начисления\n\n' + '\n'.join(f"#{row['id']} · {row['referrer_id']} · {money(row['amount_kopecks'])} · {row['status']}" for row in rows)
     else:
         text = 'Данных нет.'
-    await show(callback, text[:3900], back('admin:referrals'))
+    await show(callback, text[:3900], back('admin:communications'))
 
 
 @router.callback_query(F.data == 'admin:broadcasts')
@@ -633,6 +633,10 @@ async def admin_broadcasts(callback: CallbackQuery) -> None:
 async def admin_communications(callback: CallbackQuery) -> None:
     if not await guarded(callback):
         return
+    await render_communications(callback)
+
+
+async def render_communications(callback: CallbackQuery) -> None:
     broadcasts = await get_broadcast_history()
     referrals = await get_referral_summary()
     text = (
