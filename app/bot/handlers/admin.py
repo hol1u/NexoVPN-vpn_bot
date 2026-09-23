@@ -117,6 +117,51 @@ def money(kopecks: int) -> str:
     return f"{kopecks / 100:.2f} ₽"
 
 
+PAYMENT_FILTER_LABELS = {
+    "today": "Сегодня",
+    "week": "За неделю",
+    "month": "За месяц",
+    "succeeded": "Успешные",
+    "pending": "Ожидающие",
+    "failed": "Неуспешные",
+    "refunded": "Возвраты",
+}
+
+PROMO_FILTER_LABELS = {
+    "active": "Активные",
+    "paused": "Приостановленные",
+    "expired": "Истёкшие",
+}
+
+SUBSCRIPTION_FILTER_LABELS = {
+    "all": "Все",
+    "active": "Активные",
+    "expiring": "Истекающие",
+    "expired": "Истёкшие",
+}
+
+PAYMENT_STATUS_LABELS = {
+    "succeeded": "Успешный",
+    "pending": "Ожидающий",
+    "failed": "Неуспешный",
+    "refunded": "Возврат",
+}
+
+BROADCAST_AUDIENCE_LABELS = {
+    "all": "Все пользователи",
+    "active": "Активные подписчики",
+    "expiring": "Истекающие подписки",
+    "none": "Без подписки",
+    "referrals": "Пришедшие по рефералам",
+}
+
+BROADCAST_STATUS_LABELS = {
+    "running": "Выполняется",
+    "completed": "Завершена",
+    "draft": "Черновик",
+}
+
+
 def short_dt(value: Any) -> str:
     return value.astimezone(timezone.utc).strftime("%d.%m %H:%M") if value else "-"
 
@@ -200,6 +245,20 @@ async def show(callback: CallbackQuery, text: str, markup: InlineKeyboardMarkup)
         await callback.message.edit_text(text, reply_markup=markup)
 
 
+async def render_promos(callback: CallbackQuery) -> None:
+    data = await get_promo_summary()
+    await show(
+        callback,
+        f"🎫 Промокоды\n\n🟢 Активных: {data['active']}\n⏸ Приостановлено: {data['paused']}\n🔴 Истекло: {data['expired']}",
+        kb([
+            [('➕ Создать промокод', 'admin:promo:create')],
+            [('📋 Активные', 'admin:promo:active'), ('⏸ Приостановленные', 'admin:promo:paused')],
+            [('🔴 Истёкшие', 'admin:promo:expired'), ('📊 Статистика', 'admin:promo:stats')],
+            [('⬅️ Назад', 'admin:menu')],
+        ]),
+    )
+
+
 def main_menu() -> InlineKeyboardMarkup:
     return kb([
         [('📊 Статистика', 'admin:stats:today')],
@@ -274,6 +333,10 @@ async def admin_logs_filtered(callback: CallbackQuery) -> None:
 async def admin_subscriptions(callback: CallbackQuery) -> None:
     if not await guarded(callback):
         return
+    await render_subscriptions(callback)
+
+
+async def render_subscriptions(callback: CallbackQuery) -> None:
     data = await get_subscription_summary()
     await show(callback, f"💳 Подписки\n\n🟢 Активные: {data['active']}\n⏳ Скоро истекают: {data['expiring']}\n🔴 Истекшие: {data['expired']}", kb([
         [('👥 Все подписки', 'admin:subscriptions:all')], [('🟢 Активные', 'admin:subscriptions:active'), ('⏳ Истекают', 'admin:subscriptions:expiring')],
@@ -290,7 +353,7 @@ async def admin_subscription_filter(callback: CallbackQuery) -> None:
         await show(callback, "🔍 Поиск пользователя пока доступен через Telegram ID в разделе логов.\n\nСоздание VPN-доступа здесь намеренно не выполняется без VPN API.", back("admin:subscriptions"))
         return
     rows = await get_subscription_list(mode)
-    lines = [f"💳 Подписки: {mode}", ""]
+    lines = [f"💳 Подписки: {SUBSCRIPTION_FILTER_LABELS.get(mode, mode)}", ""]
     if not rows:
         lines.append("Записей нет.")
     for row in rows:
@@ -321,7 +384,7 @@ async def admin_subscription_cancel_confirm(callback: CallbackQuery) -> None:
     subscription_id = int((callback.data or '').rsplit(':', 1)[-1])
     await cancel_subscription(subscription_id)
     await write_admin_log('event', 'admin', f'Отменена подписка #{subscription_id}', telegram_id=callback.from_user.id)
-    await show(callback, "✅ Подписка отменена.", back("admin:subscriptions"))
+    await render_subscriptions(callback)
 
 
 @router.callback_query(F.data == 'admin:payments')
@@ -332,11 +395,11 @@ async def admin_payments(callback: CallbackQuery) -> None:
     s = data['summary']
     lines = [f"💰 Платежи\n\n💵 Сегодня: {money(s['today'])}\n📅 За месяц: {money(s['month'])}\n\n✅ Успешных: {s['succeeded']}\n⏳ Ожидающих: {s['pending']}\n❌ Неуспешных: {s['failed']}\n↩️ Возвратов: {s['refunded']}", '', 'Последние операции:']
     for row in data['rows']:
-        lines.append(f"#{row['id']} · {money(row['amount_kopecks'])} · {row['status']} · {short_dt(row['created_at'])}")
+        lines.append(f"#{row['id']} · {money(row['amount_kopecks'])} · {PAYMENT_STATUS_LABELS.get(row['status'], row['status'])} · {short_dt(row['created_at'])}")
     await show(callback, '\n'.join(lines)[:3900], kb([
         [('📅 Сегодня', 'admin:payments:today'), ('📅 Неделя', 'admin:payments:week'), ('📅 Месяц', 'admin:payments:month')],
         [('✅ Успешные', 'admin:payments:succeeded'), ('⏳ Ожидающие', 'admin:payments:pending')],
-        [('❌ Неуспешные', 'admin:payments:failed'), ('↩️ Возвраты', 'admin:payments:refunded')], [('⬅️ Назад', 'admin:menu')],
+        [('⚠️ Неуспешные', 'admin:payments:failed'), ('↩️ Возвраты', 'admin:payments:refunded')], [('⬅️ Назад', 'admin:menu')],
     ]))
 
 
@@ -346,11 +409,11 @@ async def admin_payment_filter(callback: CallbackQuery) -> None:
         return
     filter_key = (callback.data or '').rsplit(':', 1)[-1]
     data = await get_admin_payments(filter_key)
-    lines = [f"💰 Платежи: {filter_key}", ""]
+    lines = [f"💰 Платежи: {PAYMENT_FILTER_LABELS.get(filter_key, filter_key)}", ""]
     if not data["rows"]:
         lines.append("Записей нет.")
     for row in data["rows"]:
-        lines.append(f"#{row['id']} · {money(row['amount_kopecks'])} · {row['status']} · {short_dt(row['created_at'])}")
+        lines.append(f"#{row['id']} · {money(row['amount_kopecks'])} · {PAYMENT_STATUS_LABELS.get(row['status'], row['status'])} · {short_dt(row['created_at'])}")
     await show(callback, "\n".join(lines)[:3900], back('admin:payments'))
 
 
@@ -358,11 +421,7 @@ async def admin_payment_filter(callback: CallbackQuery) -> None:
 async def admin_promos(callback: CallbackQuery) -> None:
     if not await guarded(callback):
         return
-    data = await get_promo_summary()
-    await show(callback, f"🎫 Промокоды\n\n🟢 Активных: {data['active']}\n⏸ Приостановлено: {data['paused']}\n🔴 Истекло: {data['expired']}", kb([
-        [('➕ Создать промокод', 'admin:promo:create')], [('📋 Активные', 'admin:promo:active'), ('⏸ Приостановленные', 'admin:promo:paused')],
-        [('🔴 Истёкшие', 'admin:promo:expired'), ('📊 Статистика', 'admin:promo:stats')], [('⬅️ Назад', 'admin:menu')],
-    ]))
+    await render_promos(callback)
 
 
 @router.callback_query(F.data.startswith('admin:promo:'))
@@ -374,7 +433,7 @@ async def admin_promo_actions(callback: CallbackQuery, state: FSMContext) -> Non
         promo_id = int(parts[-1])
         await delete_promo_code(promo_id)
         await write_admin_log('event', 'admin', f"Удалён промокод #{promo_id}", telegram_id=callback.from_user.id)
-        await show(callback, "✅ Промокод удалён.", back("admin:promos"))
+        await render_promos(callback)
         return
     action = parts[-1]
     if action == 'create':
@@ -388,7 +447,7 @@ async def admin_promo_actions(callback: CallbackQuery, state: FSMContext) -> Non
         return
     if action in {"active", "paused", "expired"}:
         rows = await get_promo_codes(action)
-        lines = [f"🎫 Промокоды: {action}", ""]
+        lines = [f"🎫 Промокоды: {PROMO_FILTER_LABELS[action]}", ""]
         if not rows:
             lines.append("Записей нет.")
         for row in rows:
@@ -406,7 +465,7 @@ async def admin_promo_actions(callback: CallbackQuery, state: FSMContext) -> Non
         if current:
             await set_promo_active(promo_id, not current["is_active"])
             await write_admin_log('event', 'admin', f"Промокод {current['code']} изменил активность", telegram_id=callback.from_user.id)
-        await show(callback, "✅ Состояние промокода обновлено.", back("admin:promos"))
+        await render_promos(callback)
         return
     if len(parts) >= 4 and parts[-2] == "delete":
         promo_id = int(parts[-1])
@@ -598,7 +657,7 @@ async def broadcast_start(callback: CallbackQuery, state: FSMContext) -> None:
     if not await guarded(callback):
         return
     await state.set_state(BroadcastStates.audience)
-    await callback.message.answer('Выберите группу: all, active, expiring, none или referrals')
+    await callback.message.answer('Выберите группу: все, активные, истекающие, без подписки или рефералы')
 
 
 @router.callback_query(F.data.in_({'admin:broadcast:history', 'admin:broadcast:stats'}))
@@ -619,18 +678,25 @@ async def broadcast_history(callback: CallbackQuery) -> None:
     else:
         for row in rows:
             lines.append(
-                f"#{row['id']} · {row['audience']} · {row['status']} · "
+                f"#{row['id']} · {BROADCAST_AUDIENCE_LABELS.get(row['audience'], row['audience'])} · {BROADCAST_STATUS_LABELS.get(row['status'], row['status'])} · "
                 f"{row['sent_count']}/{row['total_count']} · {short_dt(row['created_at'])}"
             )
-    await show(callback, '\n'.join(lines)[:3900], back('admin:broadcasts'))
+    await show(callback, '\n'.join(lines)[:3900], back('admin:communications'))
 
 
 @router.message(BroadcastStates.audience)
 async def broadcast_audience(message: Message, state: FSMContext) -> None:
-    if not is_admin(message.from_user.id) or message.text.strip() not in {'all', 'active', 'expiring', 'none', 'referrals'}:
-        await message.answer('Введите: all, active, expiring, none или referrals.')
+    aliases = {
+        "все": "all",
+        "активные": "active",
+        "истекающие": "expiring",
+        "без подписки": "none",
+        "рефералы": "referrals",
+    }
+    audience = aliases.get(message.text.strip().lower())
+    if not is_admin(message.from_user.id) or audience is None:
+        await message.answer('Введите: все, активные, истекающие, без подписки или рефералы.')
         return
-    audience = message.text.strip()
     recipients = await get_broadcast_recipients(audience)
     await state.update_data(audience=audience, recipients=recipients)
     await state.set_state(BroadcastStates.message)
@@ -650,7 +716,7 @@ async def broadcast_cancel(callback: CallbackQuery, state: FSMContext) -> None:
     if not await guarded(callback):
         return
     await state.clear()
-    await callback.message.edit_text('Рассылка отменена.', reply_markup=back('admin:broadcasts'))
+    await callback.message.edit_text('Рассылка отменена.', reply_markup=back('admin:communications'))
 
 
 @router.callback_query(BroadcastStates.confirm, F.data == 'admin:broadcast:send')
@@ -673,7 +739,7 @@ async def broadcast_send(callback: CallbackQuery, state: FSMContext, bot: Bot) -
     await finish_broadcast(broadcast_id, sent, failed)
     await state.clear()
     await write_admin_log('event', 'telegram', f'Рассылка завершена: {sent} отправлено, {failed} ошибок', telegram_id=callback.from_user.id)
-    await callback.message.edit_text(f'✅ Рассылка завершена\n\nОтправлено: {sent}\nОшибок: {failed}', reply_markup=back('admin:broadcasts'))
+    await callback.message.edit_text(f'✅ Рассылка завершена\n\nОтправлено: {sent}\nОшибок: {failed}', reply_markup=back('admin:communications'))
 
 
 @router.callback_query(F.data == 'admin:settings')

@@ -314,20 +314,57 @@ async def activate_promo_code(
     telegram_id: int,
     promo_code: str,
 ) -> bool:
-    if promo_code.strip().upper() != "NERONEX":
-        return False
-
     async with _get_pool().acquire() as connection:
-        updated = await connection.fetchval(
-            """
-            UPDATE users
-            SET promo_activated = TRUE
-            WHERE telegram_id = $1
-              AND promo_activated = FALSE
-            RETURNING telegram_id
-            """,
-            telegram_id,
-        )
+        async with connection.transaction():
+            code = promo_code.strip().upper()
+            promo = await connection.fetchrow(
+                """
+                SELECT id, total_limit, per_user_limit
+                FROM promo_codes
+                WHERE code = $1
+                  AND is_active = TRUE
+                  AND starts_at <= NOW()
+                  AND (ends_at IS NULL OR ends_at > NOW())
+                FOR UPDATE
+                """,
+                code,
+            )
+
+            if promo is not None:
+                user_id = await connection.fetchval(
+                    "SELECT id FROM users WHERE telegram_id = $1",
+                    telegram_id,
+                )
+                if user_id is None:
+                    return False
+                used_by_user = await connection.fetchval(
+                    "SELECT COUNT(*) FROM promo_usages WHERE promo_id = $1 AND user_id = $2",
+                    promo["id"], user_id,
+                )
+                used_total = await connection.fetchval(
+                    "SELECT COUNT(*) FROM promo_usages WHERE promo_id = $1",
+                    promo["id"],
+                )
+                if int(used_by_user) >= promo["per_user_limit"]:
+                    return False
+                if promo["total_limit"] is not None and int(used_total) >= promo["total_limit"]:
+                    return False
+                await connection.execute(
+                    "INSERT INTO promo_usages (promo_id, user_id) VALUES ($1, $2)",
+                    promo["id"], user_id,
+                )
+            elif code != "NERONEX":
+                return False
+
+            updated = await connection.fetchval(
+                """
+                UPDATE users
+                SET promo_activated = TRUE, promo_used = FALSE
+                WHERE telegram_id = $1 AND promo_activated = FALSE
+                RETURNING telegram_id
+                """,
+                telegram_id,
+            )
 
     return updated is not None
 

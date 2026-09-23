@@ -1227,12 +1227,6 @@ async def promo_code_handler(
 ) -> None:
     promo_code = (message.text or "").strip().upper()
 
-    if promo_code != PROMO_CODE:
-        await message.answer(
-            "❌ Промокод не найден. Проверьте написание и попробуйте ещё раз."
-        )
-        return
-
     try:
         if await is_promo_activated(message.from_user.id):
             await state.clear()
@@ -1257,13 +1251,12 @@ async def promo_code_handler(
 
     if activated:
         await message.answer(
-            "🎁 Промокод успешно активирован!\n\n"
-            "Скидка 10% применится к одной покупке подписки."
+            "🎁 Промокод успешно активирован!"
         )
         return
 
     await message.answer(
-        "Промокод уже был использован."
+        "❌ Промокод недействителен, истёк, закончился или уже использован."
     )
 
 
