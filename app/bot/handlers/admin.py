@@ -121,6 +121,16 @@ def short_dt(value: Any) -> str:
     return value.astimezone(timezone.utc).strftime("%d.%m %H:%M") if value else "-"
 
 
+def parse_admin_datetime(value: str) -> str:
+    try:
+        parsed = datetime.strptime(value.strip(), "%d.%m.%Y %H:%M")
+    except ValueError:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
 async def delete_quietly(message: Message) -> None:
     try:
         await message.delete()
@@ -467,7 +477,7 @@ async def promo_per_user(message: Message, state: FSMContext) -> None:
     await delete_prompt(message, state)
     await state.update_data(per_user_limit=int(message.text))
     await state.set_state(PromoStates.starts_at)
-    await prompt(message, state, 'Дата начала в ISO 8601 или «сейчас». Пример: 2026-09-30T23:59:59+00:00')
+    await prompt(message, state, 'Дата начала или «сейчас». Формат: ДД.ММ.ГГГГ ЧЧ:ММ\nПример: 18.04.2026 00:00')
 
 
 @router.message(PromoStates.starts_at)
@@ -477,15 +487,15 @@ async def promo_start(message: Message, state: FSMContext) -> None:
         value = datetime.now(timezone.utc).isoformat()
     else:
         try:
-            value = datetime.fromisoformat(raw_value.replace('Z', '+00:00')).isoformat()
+            value = parse_admin_datetime(raw_value)
         except ValueError:
             await delete_quietly(message)
-            await temporary_message(message, 'Неверная дата. Используйте ISO 8601, например: 2026-09-30T23:59:59+00:00')
+            await temporary_message(message, 'Неверная дата. Используйте формат: 18.04.2026 00:00')
             return
     await delete_prompt(message, state)
     await state.update_data(starts_at=value)
     await state.set_state(PromoStates.ends_at)
-    await prompt(message, state, 'Дата окончания в ISO 8601 или «нет». Пример: 2026-10-30T23:59:59+00:00')
+    await prompt(message, state, 'Дата окончания или «нет». Формат: ДД.ММ.ГГГГ ЧЧ:ММ\nПример: 18.05.2026 00:00')
 
 
 @router.message(PromoStates.ends_at)
@@ -495,10 +505,10 @@ async def promo_end(message: Message, state: FSMContext) -> None:
         value = None
     else:
         try:
-            value = datetime.fromisoformat(raw_value.replace('Z', '+00:00')).isoformat()
+            value = parse_admin_datetime(raw_value)
         except ValueError:
             await delete_quietly(message)
-            await temporary_message(message, 'Неверная дата. Используйте ISO 8601 или напишите «нет».')
+            await temporary_message(message, 'Неверная дата. Используйте формат: 18.05.2026 00:00 или напишите «нет».')
             return
     await delete_prompt(message, state)
     await state.update_data(ends_at=value)
