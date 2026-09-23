@@ -44,6 +44,20 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
+async def safe_callback_answer(
+    callback: CallbackQuery,
+    *args: Any,
+    **kwargs: Any,
+) -> None:
+    try:
+        await callback.answer(*args, **kwargs)
+    except TelegramBadRequest as exc:
+        if "query is too old" in str(exc) or "query ID is invalid" in str(exc):
+            logger.info("Пропущен просроченный callback query")
+            return
+        raise
+
+
 # ============================================================
 # CALLBACK DATA
 # ============================================================
@@ -1521,7 +1535,7 @@ async def connect_handler(
     callback: CallbackQuery,
 ) -> None:
 
-    await callback.answer()
+    await safe_callback_answer(callback)
 
     await edit_menu(
         callback,

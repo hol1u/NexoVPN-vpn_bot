@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -70,11 +71,21 @@ def short_dt(value: Any) -> str:
     return value.astimezone(timezone.utc).strftime("%d.%m %H:%M") if value else "-"
 
 
+async def safe_callback_answer(callback: CallbackQuery, *args: Any, **kwargs: Any) -> None:
+    try:
+        await callback.answer(*args, **kwargs)
+    except TelegramBadRequest as exc:
+        if "query is too old" in str(exc) or "query ID is invalid" in str(exc):
+            logger.info("Пропущен просроченный callback query")
+            return
+        raise
+
+
 async def guarded(callback: CallbackQuery) -> bool:
     if not is_admin(callback.from_user.id):
-        await callback.answer("Доступ запрещён", show_alert=True)
+        await safe_callback_answer(callback, "Доступ запрещён", show_alert=True)
         return False
-    await callback.answer()
+    await safe_callback_answer(callback)
     return True
 
 

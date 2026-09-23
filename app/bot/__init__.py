@@ -1,6 +1,7 @@
 import logging
 
 from aiogram import BaseMiddleware, Bot, Dispatcher
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, Message
 from typing import Any, Awaitable, Callable
 
@@ -23,16 +24,28 @@ class ActivityMiddleware(BaseMiddleware):
         if isinstance(event, (Message, CallbackQuery)):
             user = event.from_user
 
-        if user is not None:
-            try:
-                await touch_user_activity(user.id)
-            except Exception:
-                logger.exception(
-                    "Не удалось обновить активность telegram_id=%s",
-                    user.id,
-                )
+        try:
+            return await handler(event, data)
 
-        return await handler(event, data)
+        except TelegramBadRequest as exc:
+            if isinstance(event, CallbackQuery) and (
+                "query is too old" in str(exc)
+                or "query ID is invalid" in str(exc)
+            ):
+                logger.info("Пропущен просроченный callback query")
+                return None
+            raise
+
+        finally:
+            # Activity tracking must not delay callback acknowledgement.
+            if user is not None:
+                try:
+                    await touch_user_activity(user.id)
+                except Exception:
+                    logger.exception(
+                        "Не удалось обновить активность telegram_id=%s",
+                        user.id,
+                    )
 
 
 def create_bot() -> tuple[Bot, Dispatcher]:
