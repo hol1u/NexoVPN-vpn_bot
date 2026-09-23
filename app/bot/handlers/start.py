@@ -867,7 +867,7 @@ def build_documents_menu() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
-                    text="🔒 Политика конфиденциальности бота Nexo VPN",
+                    text="📇 Политика бота",
                     callback_data=CB_BOT_PRIVACY,
                 )
             ],
@@ -1295,7 +1295,7 @@ async def bot_privacy_handler(
 
     await edit_menu(
         callback,
-        "🔒 Политика конфиденциальности бота Nexo VPN\n\n"
+        "📇 Политика бота\n\n"
         "1. Мы храним только данные, необходимые для работы сервиса: "
         "ваш Telegram ID, username, баланс и историю покупок подписок.\n\n"
         "2. Мы не ведём логи посещённых сайтов и не анализируем содержимое "
