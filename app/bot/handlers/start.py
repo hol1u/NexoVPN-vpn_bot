@@ -76,6 +76,7 @@ CB_INVITE = "menu:invite"
 CB_HELP = "menu:help"
 CB_PROMO = "menu:promo"
 CB_DOCUMENTS = "menu:documents"
+CB_BOT_PRIVACY = "documents:bot-privacy"
 CB_BACK = "menu:back"
 CB_CANCEL = "balance:cancel"
 CB_ADMIN_STATS = "admin:stats"
@@ -866,6 +867,12 @@ def build_documents_menu() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
+                    text="🔒 Политика конфиденциальности бота Nexo VPN",
+                    callback_data=CB_BOT_PRIVACY,
+                )
+            ],
+            [
+                InlineKeyboardButton(
                     text="◀️ Назад в меню",
                     callback_data=CB_BACK,
                     style="danger",
@@ -1274,6 +1281,32 @@ async def documents_handler(
         "📄 Документы Nexo VPN\n\n"
         "Ниже — все документы сервиса:",
         build_documents_menu(),
+    )
+
+
+@router.callback_query(
+    F.data == CB_BOT_PRIVACY
+)
+async def bot_privacy_handler(
+    callback: CallbackQuery,
+) -> None:
+
+    await callback.answer()
+
+    await edit_menu(
+        callback,
+        "🔒 Политика конфиденциальности бота Nexo VPN\n\n"
+        "1. Мы храним только данные, необходимые для работы сервиса: "
+        "ваш Telegram ID, username, баланс и историю покупок подписок.\n\n"
+        "2. Мы не ведём логи посещённых сайтов и не анализируем содержимое "
+        "VPN-трафика.\n\n"
+        "3. Данные об оплате обрабатываются платёжным партнёром RollyPay "
+        "согласно его правилам.\n\n"
+        "4. Данные не передаются третьим лицам, кроме случаев, "
+        "предусмотренных законом.\n\n"
+        "5. Вы можете запросить удаление своих данных, обратившись в "
+        "поддержку: https://t.me/nexo_proxy_help",
+        build_plan_card_menu(CB_DOCUMENTS),
     )
 
 
