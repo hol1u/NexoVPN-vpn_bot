@@ -28,6 +28,7 @@ from app.db import (
     count_referrals,
     count_users,
     get_active_family_plans,
+    get_active_plans_by_device_limit,
     get_active_single_plans,
     get_plan_by_code,
     get_user_balance,
@@ -47,6 +48,9 @@ router = Router()
 CB_CHECK_SUBSCRIPTION = "subscription:check"
 
 CB_CONNECT = "menu:connect"
+CB_DEVICE_3 = "menu:devices:3"
+CB_DEVICE_6 = "menu:devices:6"
+CB_TRIAL = "menu:trial"
 CB_SUBSCRIPTION = "menu:subscription"
 CB_RENEW = "menu:renew"
 CB_BALANCE = "menu:balance"
@@ -114,10 +118,10 @@ HELP_TEXT = (
     "Здесь ты найдёшь ответы на основные вопросы "
     "по NexoVPN.\n\n"
     "🔹 Как купить подписку?\n"
-    "Выбери «🍁 Купить подписку», затем подходящий тариф.\n\n"
+    "Выбери «💎 Купить подписку», затем подходящий тариф.\n\n"
     "🔹 Сколько устройств можно подключить?\n"
-    "Обычная подписка — 1 устройство.\n"
-    "Семейная подписка — до 6 устройств.\n\n"
+    "Доступны варианты на 3 и 6 устройств.\n"
+    "Подписка работает одновременно на выбранном числе устройств.\n\n"
     "🔹 Как пополнить баланс?\n"
     "Открой «💰 Баланс» → «💸 Пополнить баланс» "
     "и следуй инструкции.\n\n"
@@ -225,7 +229,7 @@ def build_main_menu(
     rows = [
         [
             InlineKeyboardButton(
-                text="🍁 Купить подписку",
+                text="💎 Купить подписку",
                 callback_data=CB_CONNECT,
             )
         ],
@@ -289,7 +293,7 @@ def build_referral_menu(
 ) -> InlineKeyboardMarkup:
 
     share_text = (
-        "🍁 Подключайся к NexoVPN — стабильный "
+        "💎 Подключайся к NexoVPN — стабильный "
         "и защищённый интернет без лишних ограничений."
     )
 
@@ -351,7 +355,7 @@ def build_subscription_menu() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="🍁 Купить подписку",
+                    text="💎 Купить подписку",
                     callback_data=CB_CONNECT,
                 )
             ],
@@ -618,7 +622,33 @@ def build_purchase_plans_text(
             f" · {devices}"
         )
 
-    return "🍁 Доступные подписки\n\n" + "\n".join(lines)
+    return "💎 Доступные подписки\n\n" + "\n".join(lines)
+
+
+def build_device_choice_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📱 3 устройства",
+                    callback_data=CB_DEVICE_3,
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="💻📱 6 устройств",
+                    callback_data=CB_DEVICE_6,
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🎁 Пробные 3 дня",
+                    callback_data=CB_TRIAL,
+                )
+            ],
+            [build_back_button(CB_BACK)],
+        ]
+    )
 
 
 def build_family_plans_text(
@@ -755,7 +785,7 @@ def build_no_subscription_menu() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="🍁 Купить подписку",
+                    text="💎 Купить подписку",
                     callback_data=CB_CONNECT,
                 )
             ],
@@ -1391,17 +1421,31 @@ async def connect_handler(
     callback: CallbackQuery,
 ) -> None:
 
+    await callback.answer()
+
+    await edit_menu(
+        callback,
+        "📱 Выберите количество устройств\n\n"
+        "Подписка будет работать одновременно "
+        "на выбранном числе устройств.",
+        build_device_choice_menu(),
+    )
+
+
+async def show_device_plans(
+    callback: CallbackQuery,
+    device_limit: int,
+) -> None:
+
     try:
-        single_plans = (
-            await get_active_single_plans()
-        )
-        family_plans = (
-            await get_active_family_plans()
+        plans = await get_active_plans_by_device_limit(
+            device_limit
         )
 
     except Exception:
         logger.exception(
-            "Не удалось загрузить тарифы для покупки"
+            "Не удалось загрузить тарифы для %s устройств",
+            device_limit,
         )
 
         await callback.answer(
@@ -1411,17 +1455,15 @@ async def connect_handler(
         )
         return
 
-    plans = single_plans + family_plans
-
     await callback.answer()
 
     if not plans:
         await edit_menu(
             callback,
-            "Тарифы временно недоступны. "
-            "Попробуйте позже.",
+            f"Тарифы на {device_limit} устройств "
+            "временно недоступны. Попробуйте позже.",
             build_plan_card_menu(
-                CB_BACK
+                CB_CONNECT
             ),
         )
         return
@@ -1436,6 +1478,40 @@ async def connect_handler(
             CB_PLAN_PREFIX,
             CB_BACK,
         ),
+    )
+
+
+@router.callback_query(
+    F.data == CB_DEVICE_3
+)
+async def device_3_handler(
+    callback: CallbackQuery,
+) -> None:
+    await show_device_plans(callback, 3)
+
+
+@router.callback_query(
+    F.data == CB_DEVICE_6
+)
+async def device_6_handler(
+    callback: CallbackQuery,
+) -> None:
+    await show_device_plans(callback, 6)
+
+
+@router.callback_query(
+    F.data == CB_TRIAL
+)
+async def trial_handler(
+    callback: CallbackQuery,
+) -> None:
+    await callback.answer()
+
+    await edit_menu(
+        callback,
+        "🎁 Пробные 3 дня\n\n"
+        "Активация пробного периода пока недоступна.",
+        build_plan_card_menu(CB_CONNECT),
     )
 
 

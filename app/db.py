@@ -408,6 +408,27 @@ async def get_active_family_plans() -> list[dict[str, Any]]:
     )
 
 
+async def get_active_plans_by_device_limit(
+    device_limit: int,
+) -> list[dict[str, Any]]:
+    async with _get_pool().acquire() as connection:
+        rows = await connection.fetch(
+            f"""
+            SELECT {PLAN_COLUMNS}
+            FROM plans
+            WHERE device_limit = $1
+              AND is_active = TRUE
+            ORDER BY duration_days
+            """,
+            device_limit,
+        )
+
+    return [
+        dict(row)
+        for row in rows
+    ]
+
+
 async def get_plan_by_code(
     code: str,
     only_active: bool = True,
