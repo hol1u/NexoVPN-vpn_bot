@@ -202,9 +202,9 @@ async def show(callback: CallbackQuery, text: str, markup: InlineKeyboardMarkup)
 
 def main_menu() -> InlineKeyboardMarkup:
     return kb([
-        [('📊 Статистика', 'admin:stats:today'), ('📋 Логи', 'admin:logs')],
+        [('📊 Статистика', 'admin:stats:today')],
         [('💳 Подписки', 'admin:subscriptions'), ('💰 Платежи', 'admin:payments')],
-        [('🎫 Промокоды', 'admin:promos'), ('📢 Рассылки', 'admin:broadcasts')],
+        [('🎫 Промокоды', 'admin:promos'), ('📢 Рассылки и рефералы', 'admin:communications')],
         [('⬅️ Назад в меню', 'menu:back')],
     ])
 
@@ -569,6 +569,29 @@ async def admin_broadcasts(callback: CallbackQuery) -> None:
     await show(callback, f"📢 Рассылки\n\n📨 Всего рассылок: {len(rows)}\n✅ Отправлено: {sum(row['sent_count'] for row in rows)}\n❌ Ошибок: {sum(row['failed_count'] for row in rows)}", kb([
         [('📨 Создать рассылку', 'admin:broadcast:create')],
         [('📋 История рассылок', 'admin:broadcast:history')],
+        [('⬅️ Назад', 'admin:menu')],
+    ]))
+
+
+@router.callback_query(F.data == 'admin:communications')
+async def admin_communications(callback: CallbackQuery) -> None:
+    if not await guarded(callback):
+        return
+    broadcasts = await get_broadcast_history()
+    referrals = await get_referral_summary()
+    text = (
+        "📢 Рассылки и рефералы\n\n"
+        f"📨 Рассылок: {len(broadcasts)}\n"
+        f"✅ Отправлено: {sum(row['sent_count'] for row in broadcasts)}\n"
+        f"❌ Ошибок: {sum(row['failed_count'] for row in broadcasts)}\n\n"
+        f"👥 Приглашено: {referrals['total']}\n"
+        f"🆕 За сегодня: {referrals['today']}\n"
+        f"💰 Начислено: {money(referrals['bonuses'])}"
+    )
+    await show(callback, text, kb([
+        [('📨 Создать рассылку', 'admin:broadcast:create')],
+        [('📋 История рассылок', 'admin:broadcast:history')],
+        [('👥 Все приглашения', 'admin:referrals:all'), ('🏆 Топ рефералов', 'admin:referrals:top')],
         [('⬅️ Назад', 'admin:menu')],
     ]))
 
