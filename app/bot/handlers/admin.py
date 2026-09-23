@@ -221,7 +221,6 @@ async def admin_stats(callback: CallbackQuery) -> None:
     if not await guarded(callback):
         return
     data = await get_admin_stats("today")
-    referrals = await get_referral_summary()
     text = (
         '📊 Статистика\n\n'
         f"👥 Всего пользователей: {data['total_users']}\n"
@@ -232,9 +231,7 @@ async def admin_stats(callback: CallbackQuery) -> None:
         f"⏳ Истекают в ближайшие 3 дня: {data['expiring_subscriptions']}\n\n"
         f"💰 Выручка за сегодня: {money(data['revenue_today'])}\n"
         f"💰 Выручка за месяц: {money(data['revenue_month'])}\n\n"
-        f"👥 Новых пользователей сегодня: {data['new_users_today']}\n"
-        f"🎁 Пришло по рефералам сегодня: {referrals['today']}\n"
-        f"👥 Всего приглашено: {referrals['total']}"
+        f"👥 Новых пользователей сегодня: {data['new_users_today']}"
     )
     await show(callback, text, back('admin:menu'))
 
