@@ -553,11 +553,15 @@ async def get_plan_by_code(
 # ============================================================
 
 async def get_admin_stats(period: str = "today") -> dict[str, Any]:
-    intervals = {"today": "1 day", "week": "7 days", "month": "1 month"}
-    interval = intervals.get(period, "1 day")
+    intervals = {
+        "today": "1 day",
+        "week": "7 days",
+        "month": "1 month",
+    }
+    interval = intervals.get(period, intervals["today"])
     async with _get_pool().acquire() as connection:
         row = await connection.fetchrow(
-            """
+            f"""
             SELECT
                 (SELECT COUNT(*) FROM users) AS total_users,
                 (SELECT COUNT(*) FROM users WHERE last_activity_at >= NOW() - INTERVAL '15 minutes') AS online_users,
@@ -566,10 +570,9 @@ async def get_admin_stats(period: str = "today") -> dict[str, Any]:
                 (SELECT COALESCE(SUM(amount_kopecks), 0) FROM payments WHERE status = 'succeeded' AND created_at >= CURRENT_DATE) AS revenue_today,
                 (SELECT COALESCE(SUM(amount_kopecks), 0) FROM payments WHERE status = 'succeeded' AND created_at >= DATE_TRUNC('month', NOW())) AS revenue_month,
                 (SELECT COUNT(*) FROM users WHERE created_at >= CURRENT_DATE) AS new_users_today,
-                (SELECT COUNT(*) FROM users WHERE referred_by IS NOT NULL AND created_at >= NOW() - $1::INTERVAL) AS referrals_period,
+                (SELECT COUNT(*) FROM users WHERE referred_by IS NOT NULL AND created_at >= NOW() - INTERVAL '{interval}') AS referrals_period,
                 (SELECT COUNT(*) FROM subscriptions WHERE status = 'active' AND expires_at <= NOW()) AS expired_subscriptions
             """,
-            interval,
         )
     return dict(row)
 
