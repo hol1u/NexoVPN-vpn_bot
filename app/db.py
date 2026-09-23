@@ -566,6 +566,7 @@ async def get_admin_stats(period: str = "today") -> dict[str, Any]:
                 (SELECT COUNT(*) FROM users) AS total_users,
                 (SELECT COUNT(*) FROM users WHERE last_activity_at >= NOW() - INTERVAL '15 minutes') AS online_users,
                 (SELECT COUNT(*) FROM subscriptions WHERE status = 'active' AND expires_at > NOW()) AS active_subscriptions,
+                (SELECT COUNT(*) FROM subscriptions) AS total_subscriptions,
                 (SELECT COUNT(*) FROM subscriptions WHERE status = 'active' AND expires_at > NOW() AND expires_at <= NOW() + INTERVAL '3 days') AS expiring_subscriptions,
                 (SELECT COALESCE(SUM(amount_kopecks), 0) FROM payments WHERE status = 'succeeded' AND created_at >= CURRENT_DATE) AS revenue_today,
                 (SELECT COALESCE(SUM(amount_kopecks), 0) FROM payments WHERE status = 'succeeded' AND created_at >= DATE_TRUNC('month', NOW())) AS revenue_month,

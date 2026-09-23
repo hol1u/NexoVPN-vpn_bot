@@ -204,8 +204,7 @@ def main_menu() -> InlineKeyboardMarkup:
     return kb([
         [('📊 Статистика', 'admin:stats:today'), ('📋 Логи', 'admin:logs')],
         [('💳 Подписки', 'admin:subscriptions'), ('💰 Платежи', 'admin:payments')],
-        [('🎫 Промокоды', 'admin:promos'), ('🎁 Реферальная система', 'admin:referrals')],
-        [('📢 Рассылки', 'admin:broadcasts'), ('⚙️ Настройки', 'admin:settings')],
+        [('🎫 Промокоды', 'admin:promos'), ('📢 Рассылки', 'admin:broadcasts')],
         [('⬅️ Назад в меню', 'menu:back')],
     ])
 
@@ -221,24 +220,23 @@ async def admin_menu(callback: CallbackQuery) -> None:
 async def admin_stats(callback: CallbackQuery) -> None:
     if not await guarded(callback):
         return
-    period = (callback.data or '').rsplit(':', 1)[-1]
-    data = await get_admin_stats(period)
+    data = await get_admin_stats("today")
+    referrals = await get_referral_summary()
     text = (
         '📊 Статистика\n\n'
         f"👥 Всего пользователей: {data['total_users']}\n"
         f"🟢 Сейчас онлайн: {data['online_users']} (по активности за 15 мин)\n"
         f"⚪ Не в сети: {max(0, data['total_users'] - data['online_users'])}\n\n"
         f"💳 Активных подписок: {data['active_subscriptions']}\n"
+        f"📚 Подписок за всё время: {data['total_subscriptions']}\n"
         f"⏳ Истекают в ближайшие 3 дня: {data['expiring_subscriptions']}\n\n"
         f"💰 Выручка за сегодня: {money(data['revenue_today'])}\n"
         f"💰 Выручка за месяц: {money(data['revenue_month'])}\n\n"
         f"👥 Новых пользователей сегодня: {data['new_users_today']}\n"
-        f"🎁 Пришло по рефералам: {data['referrals_period']}"
+        f"🎁 Пришло по рефералам сегодня: {referrals['today']}\n"
+        f"👥 Всего приглашено: {referrals['total']}"
     )
-    await show(callback, text, kb([
-        [('📈 За сегодня', 'admin:stats:today'), ('📊 За неделю', 'admin:stats:week')],
-        [('📅 За месяц', 'admin:stats:month')], [('⬅️ Назад', 'admin:menu')],
-    ]))
+    await show(callback, text, back('admin:menu'))
 
 
 @router.callback_query(F.data == 'admin:logs')
@@ -567,7 +565,12 @@ async def admin_referral_actions(callback: CallbackQuery) -> None:
 async def admin_broadcasts(callback: CallbackQuery) -> None:
     if not await guarded(callback):
         return
-    await show(callback, '📢 Рассылки', kb([[('📨 Создать рассылку', 'admin:broadcast:create')], [('📋 История рассылок', 'admin:broadcast:history'), ('📊 Статистика', 'admin:broadcast:stats')], [('⬅️ Назад', 'admin:menu')]]))
+    rows = await get_broadcast_history()
+    await show(callback, f"📢 Рассылки\n\n📨 Всего рассылок: {len(rows)}\n✅ Отправлено: {sum(row['sent_count'] for row in rows)}\n❌ Ошибок: {sum(row['failed_count'] for row in rows)}", kb([
+        [('📨 Создать рассылку', 'admin:broadcast:create')],
+        [('📋 История рассылок', 'admin:broadcast:history')],
+        [('⬅️ Назад', 'admin:menu')],
+    ]))
 
 
 @router.callback_query(F.data == 'admin:broadcast:create')
