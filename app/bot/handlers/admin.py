@@ -125,6 +125,7 @@ def main_menu() -> InlineKeyboardMarkup:
         [('💳 Подписки', 'admin:subscriptions'), ('💰 Платежи', 'admin:payments')],
         [('🎫 Промокоды', 'admin:promos'), ('🎁 Реферальная система', 'admin:referrals')],
         [('📢 Рассылки', 'admin:broadcasts'), ('⚙️ Настройки', 'admin:settings')],
+        [('⬅️ Назад в меню', 'menu:back')],
     ])
 
 
