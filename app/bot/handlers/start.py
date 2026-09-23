@@ -836,6 +836,32 @@ def build_plan_card_menu(
     )
 
 
+def build_documents_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📄 Пользовательское соглашение",
+                    url="https://telegra.ph/POLITIKA-KONFIDENCIALNOSTI-08-12-99",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔒 Политика конфиденциальности",
+                    url="https://telegra.ph/PUBLICHNAYA-OFERTA-08-12-15",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="◀️ Назад в меню",
+                    callback_data=CB_BACK,
+                    style="danger",
+                )
+            ],
+        ]
+    )
+
+
 # ============================================================
 # SUBSCRIPTION PLACEHOLDER
 # ============================================================
@@ -1232,9 +1258,9 @@ async def documents_handler(
 
     await edit_menu(
         callback,
-        "📄 Документы\n\n"
-        "Раздел пока находится в разработке.",
-        build_plan_card_menu(CB_BACK),
+        "📄 Документы Nexo VPN\n\n"
+        "Ниже — все документы сервиса:",
+        build_documents_menu(),
     )
 
 
