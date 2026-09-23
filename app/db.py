@@ -310,6 +310,63 @@ async def add_user_balance(
         )
 
 
+async def activate_promo_code(
+    telegram_id: int,
+    promo_code: str,
+) -> bool:
+    if promo_code.strip().upper() != "NERONEX":
+        return False
+
+    async with _get_pool().acquire() as connection:
+        updated = await connection.fetchval(
+            """
+            UPDATE users
+            SET promo_activated = TRUE
+            WHERE telegram_id = $1
+              AND promo_activated = FALSE
+            RETURNING telegram_id
+            """,
+            telegram_id,
+        )
+
+    return updated is not None
+
+
+async def is_promo_activated(
+    telegram_id: int,
+) -> bool:
+    async with _get_pool().acquire() as connection:
+        activated = await connection.fetchval(
+            """
+            SELECT promo_activated AND NOT promo_used
+            FROM users
+            WHERE telegram_id = $1
+            """,
+            telegram_id,
+        )
+
+    return bool(activated)
+
+
+async def consume_promo_code(
+    telegram_id: int,
+) -> bool:
+    async with _get_pool().acquire() as connection:
+        updated = await connection.fetchval(
+            """
+            UPDATE users
+            SET promo_used = TRUE
+            WHERE telegram_id = $1
+              AND promo_activated = TRUE
+              AND promo_used = FALSE
+            RETURNING telegram_id
+            """,
+            telegram_id,
+        )
+
+    return updated is not None
+
+
 # ============================================================
 # REFERRALS
 # ============================================================

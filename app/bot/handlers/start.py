@@ -33,6 +33,9 @@ from app.db import (
     get_plan_by_code,
     get_user_balance,
     get_user_referral_code,
+    activate_promo_code,
+    consume_promo_code,
+    is_promo_activated,
     register_user,
 )
 
@@ -73,6 +76,12 @@ CB_RENEW_PLAN_PREFIX = "renew:"
 CB_TOPUP_METHOD_PREFIX = "topup:method:"
 CB_TOPUP_METHOD_SBP = f"{CB_TOPUP_METHOD_PREFIX}sbp"
 CB_TOPUP_METHOD_CARD = f"{CB_TOPUP_METHOD_PREFIX}card"
+
+PROMO_CODE = "NERONEX"
+
+
+class PromoStates(StatesGroup):
+    waiting_code = State()
 
 
 # ============================================================
@@ -245,7 +254,7 @@ def build_main_menu(
                 callback_data=CB_BALANCE,
             ),
             InlineKeyboardButton(
-                text="🎟 Промокод",
+                text="🎫 Промокод",
                 callback_data=CB_PROMO,
             ),
         ],
@@ -556,22 +565,39 @@ def devices_up_to(
     return f"До {device_limit} {word}"
 
 
+def discounted_price(
+    price_kopecks: int,
+    discount_percent: int,
+) -> int:
+    return round(
+        price_kopecks * (100 - discount_percent) / 100
+    )
+
+
 def format_plan_line(
     plan: dict[str, Any],
+    discount_percent: int = 0,
 ) -> str:
 
     months = plan_months(plan)
     price_kopecks = plan["price_kopecks"]
+    display_price = discounted_price(
+        price_kopecks,
+        discount_percent,
+    )
 
     line = (
         f"{plan_emoji(months)} "
         f"{months_label(months)} — "
-        f"{format_price(price_kopecks)}"
+        f"{format_price(display_price)}"
     )
+
+    if discount_percent:
+        line += f" (-{discount_percent}%)"
 
     if months > 1:
         per_month = (
-            price_kopecks + months * 50
+            display_price + months * 50
         ) // (months * 100)
 
         per_month_text = (
@@ -604,6 +630,7 @@ def build_single_plans_text(
 
 def build_purchase_plans_text(
     plans: list[dict[str, Any]],
+    discount_percent: int = 0,
 ) -> str:
     lines = []
 
@@ -618,7 +645,7 @@ def build_purchase_plans_text(
             devices = devices_up_to(plan["device_limit"])
 
         lines.append(
-            f"{title} · {format_plan_line(plan)}"
+            f"{title} · {format_plan_line(plan, discount_percent)}"
             f" · {devices}"
         )
 
@@ -638,12 +665,6 @@ def build_device_choice_menu() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text="💻📱 6 устройств",
                     callback_data=CB_DEVICE_6,
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🎁 Пробные 3 дня",
-                    callback_data=CB_TRIAL,
                 )
             ],
             [build_back_button(CB_BACK)],
@@ -686,6 +707,7 @@ def build_renew_plans_text(
 def format_plan_card(
     plan: dict[str, Any],
     renewal: bool,
+    discount_percent: int = 0,
 ) -> str:
 
     months = plan_months(plan)
@@ -712,6 +734,16 @@ def format_plan_card(
             plan["device_limit"]
         )
 
+    display_price = discounted_price(
+        plan["price_kopecks"],
+        discount_percent,
+    )
+    discount_text = (
+        f" (-{discount_percent}%)"
+        if discount_percent
+        else ""
+    )
+
     return (
         f"{title}\n\n"
         f"{plan_emoji(months)} "
@@ -719,7 +751,7 @@ def format_plan_card(
         f"⏳ Срок: {plan['duration_days']} дн.\n"
         f"📱 Устройства: {devices}\n"
         f"💰 Стоимость: "
-        f"{format_price(plan['price_kopecks'])}\n\n"
+        f"{format_price(display_price)}{discount_text}\n\n"
         "🔜 Оплата скоро появится."
     )
 
@@ -767,6 +799,14 @@ def build_plans_menu(
         )
     ]
 
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="🎁 Пробные 3 дня",
+                callback_data=CB_TRIAL,
+            )
+        ]
+    )
     rows.append(
         [
             build_back_button(
@@ -1135,15 +1175,64 @@ async def help_handler(
 )
 async def promo_handler(
     callback: CallbackQuery,
+    state: FSMContext,
 ) -> None:
 
     await callback.answer()
+    await state.set_state(PromoStates.waiting_code)
 
     await edit_menu(
         callback,
         "🎟 Промокод\n\n"
-        "Раздел пока находится в разработке.",
+        "Введите промокод сообщением в чат:",
         build_plan_card_menu(CB_BACK),
+    )
+
+
+@router.message(PromoStates.waiting_code)
+async def promo_code_handler(
+    message: Message,
+    state: FSMContext,
+) -> None:
+    promo_code = (message.text or "").strip().upper()
+
+    if promo_code != PROMO_CODE:
+        await message.answer(
+            "❌ Промокод не найден. Проверьте написание и попробуйте ещё раз."
+        )
+        return
+
+    try:
+        if await is_promo_activated(message.from_user.id):
+            await state.clear()
+            await message.answer("Промокод уже был использован.")
+            return
+
+        activated = await activate_promo_code(
+            message.from_user.id,
+            promo_code,
+        )
+    except Exception:
+        logger.exception(
+            "Не удалось активировать промокод telegram_id=%s",
+            message.from_user.id,
+        )
+        await message.answer(
+            "Не удалось активировать промокод. Попробуйте позже."
+        )
+        return
+
+    await state.clear()
+
+    if activated:
+        await message.answer(
+            "🎁 Промокод успешно активирован!\n\n"
+            "Скидка 10% применится к одной покупке подписки."
+        )
+        return
+
+    await message.answer(
+        "Промокод уже был использован."
     )
 
 
@@ -1455,6 +1544,10 @@ async def show_device_plans(
         )
         return
 
+    promo_active = await is_promo_activated(
+        callback.from_user.id,
+    )
+
     await callback.answer()
 
     if not plans:
@@ -1471,7 +1564,8 @@ async def show_device_plans(
     await edit_menu(
         callback,
         build_purchase_plans_text(
-            plans
+            plans,
+            discount_percent=10 if promo_active else 0,
         ),
         build_plans_menu(
             plans,
@@ -1671,6 +1765,13 @@ async def show_plan_card(
         )
         return
 
+    promo_active = (
+        not renewal
+        and await is_promo_activated(
+            callback.from_user.id,
+        )
+    )
+
     if (
         renewal
         and plan["type"] != "single"
@@ -1683,6 +1784,11 @@ async def show_plan_card(
         return
 
     await callback.answer()
+
+    if promo_active:
+        await consume_promo_code(
+            callback.from_user.id,
+        )
 
     if renewal:
         back_callback = CB_RENEW
@@ -1698,6 +1804,7 @@ async def show_plan_card(
         format_plan_card(
             plan,
             renewal=renewal,
+            discount_percent=10 if promo_active else 0,
         ),
         build_plan_card_menu(
             back_callback
