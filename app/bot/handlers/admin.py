@@ -63,6 +63,7 @@ class AdminErrorMiddleware(BaseMiddleware):
 
 
 router.callback_query.middleware(AdminErrorMiddleware())
+router.message.middleware(AdminErrorMiddleware())
 
 
 class PromoStates(StatesGroup):
@@ -150,6 +151,22 @@ SUBSCRIPTION_FILTER_LABELS = {
     "active": "Активные",
     "expiring": "Истекающие",
     "expired": "Истёкшие",
+}
+
+SUBSCRIPTION_STATUS_LABELS = {
+    "active": "Активная",
+    "expired": "Истёкшая",
+    "cancelled": "Отменённая",
+}
+
+LOG_FILTER_LABELS = {
+    "error": "Ошибки",
+    "warning": "Предупреждения",
+    "event": "События",
+    "payments": "Платежи",
+    "users": "Пользователи",
+    "telegram": "Telegram",
+    "database": "База данных",
 }
 
 PAYMENT_STATUS_LABELS = {
@@ -363,7 +380,7 @@ async def admin_logs_filtered(callback: CallbackQuery) -> None:
     value = parts[-1]
     is_category = len(parts) == 4 and parts[-2] == 'category'
     logs = await get_admin_logs(category=value if is_category else None, level=None if is_category else value)
-    lines = [f"📋 Логи: {value}", '']
+    lines = [f"📋 Логи: {LOG_FILTER_LABELS.get(value, value)}", '']
     lines.extend(f"{short_dt(x['created_at'])} · {x['category']}\n{x['message']}" for x in logs)
     await show(callback, '\n'.join(lines)[:3900] or 'Событий нет.', back('admin:logs'))
 
@@ -399,7 +416,7 @@ async def admin_subscription_filter(callback: CallbackQuery) -> None:
         lines.append(
             f"#{row['id']} · {row['telegram_id']} · @{row['username'] or '-'}\n"
             f"{row['plan_code'] or '-'} · до {short_dt(row['expires_at'])} · "
-            f"{row['status']} · {row['device_limit']} уст."
+            f"{SUBSCRIPTION_STATUS_LABELS.get(row['status'], row['status'])} · {row['device_limit']} уст."
         )
     markup_rows = [[("🛑 Отменить #" + str(row["id"]), f"admin:subscription:cancel:{row['id']}")] for row in rows if row["status"] == "active"]
     markup_rows.append([("⬅️ Назад", "admin:subscriptions")])
@@ -535,14 +552,16 @@ async def promo_code(message: Message, state: FSMContext) -> None:
     if not is_admin(message.from_user.id):
         return
     await delete_prompt(message, state)
-    await state.update_data(code=message.text.strip().upper())
+    await state.update_data(code=(message.text or '').strip().upper())
     await state.set_state(PromoStates.reward_type)
     await prompt(message, state, 'Тип награды: напишите «скидка» или «дни».')
 
 
 @router.message(PromoStates.reward_type)
 async def promo_type(message: Message, state: FSMContext) -> None:
-    value = message.text.strip().lower()
+    if not is_admin(message.from_user.id):
+        return
+    value = (message.text or '').strip().lower()
     if value not in {'скидка', 'дни'}:
         await delete_quietly(message)
         await temporary_message(message, 'Введите «скидка» или «дни».')
@@ -556,6 +575,8 @@ async def promo_type(message: Message, state: FSMContext) -> None:
 
 @router.message(PromoStates.reward_value)
 async def promo_value(message: Message, state: FSMContext) -> None:
+    if not is_admin(message.from_user.id):
+        return
     data = await state.get_data()
     reward_value = parse_reward_value(message.text or '', data['reward_type'])
     if reward_value is None:
@@ -571,7 +592,9 @@ async def promo_value(message: Message, state: FSMContext) -> None:
 
 @router.message(PromoStates.total_limit)
 async def promo_total(message: Message, state: FSMContext) -> None:
-    if not message.text.isdigit():
+    if not is_admin(message.from_user.id):
+        return
+    if not (message.text or '').isdigit():
         await delete_quietly(message)
         await temporary_message(message, 'Введите число.')
         return
@@ -583,7 +606,9 @@ async def promo_total(message: Message, state: FSMContext) -> None:
 
 @router.message(PromoStates.per_user_limit)
 async def promo_per_user(message: Message, state: FSMContext) -> None:
-    if not message.text.isdigit() or int(message.text) < 1:
+    if not is_admin(message.from_user.id):
+        return
+    if not (message.text or '').isdigit() or int(message.text) < 1:
         await delete_quietly(message)
         await temporary_message(message, 'Введите положительное число.')
         return
@@ -595,7 +620,9 @@ async def promo_per_user(message: Message, state: FSMContext) -> None:
 
 @router.message(PromoStates.starts_at)
 async def promo_start(message: Message, state: FSMContext) -> None:
-    raw_value = message.text.strip()
+    if not is_admin(message.from_user.id):
+        return
+    raw_value = (message.text or '').strip()
     if raw_value.lower() == 'сейчас':
         value = datetime.now(timezone.utc).isoformat()
     else:
@@ -613,7 +640,9 @@ async def promo_start(message: Message, state: FSMContext) -> None:
 
 @router.message(PromoStates.ends_at)
 async def promo_end(message: Message, state: FSMContext) -> None:
-    raw_value = message.text.strip()
+    if not is_admin(message.from_user.id):
+        return
+    raw_value = (message.text or '').strip()
     if raw_value.lower() == 'нет':
         value = None
     else:
@@ -631,9 +660,11 @@ async def promo_end(message: Message, state: FSMContext) -> None:
 
 @router.message(PromoStates.plan_code)
 async def promo_plan(message: Message, state: FSMContext) -> None:
+    if not is_admin(message.from_user.id):
+        return
     await delete_prompt(message, state)
     data = await state.get_data()
-    plan_code = None if message.text.strip().lower() == 'все' else message.text.strip()
+    plan_code = None if (message.text or '').strip().lower() == 'все' else (message.text or '').strip()
     try:
         await create_promo_code(code=data['code'], reward_type=data['reward_type'], reward_value=data['reward_value'], total_limit=data['total_limit'], per_user_limit=data['per_user_limit'], starts_at=data['starts_at'], ends_at=data['ends_at'], plan_code=plan_code)
     except Exception:
@@ -697,7 +728,7 @@ async def promo_edit_value(message: Message, state: FSMContext) -> None:
 async def promo_edit_total(message: Message, state: FSMContext) -> None:
     if not is_admin(message.from_user.id):
         return
-    if not message.text.isdigit():
+    if not (message.text or '').isdigit():
         await delete_quietly(message)
         await temporary_message(message, 'Введите число.')
         return
@@ -711,7 +742,7 @@ async def promo_edit_total(message: Message, state: FSMContext) -> None:
 async def promo_edit_per_user(message: Message, state: FSMContext) -> None:
     if not is_admin(message.from_user.id):
         return
-    if not message.text.isdigit() or int(message.text) < 1:
+    if not (message.text or '').isdigit() or int(message.text) < 1:
         await delete_quietly(message)
         await temporary_message(message, 'Введите положительное число.')
         return
@@ -764,7 +795,7 @@ async def promo_edit_plan(message: Message, state: FSMContext) -> None:
         return
     await delete_prompt(message, state)
     data = await state.get_data()
-    plan_code = None if (message.text or '').strip().lower() == 'все' else message.text.strip()
+    plan_code = None if (message.text or '').strip().lower() == 'все' else (message.text or '').strip()
     try:
         await update_promo_code(
             promo_id=data['promo_id'],
@@ -818,12 +849,7 @@ async def admin_referral_actions(callback: CallbackQuery) -> None:
 async def admin_broadcasts(callback: CallbackQuery) -> None:
     if not await guarded(callback):
         return
-    rows = await get_broadcast_history()
-    await show(callback, f"📢 Рассылки\n\n📨 Всего рассылок: {len(rows)}\n✅ Отправлено: {sum(row['sent_count'] for row in rows)}\n❌ Ошибок: {sum(row['failed_count'] for row in rows)}", kb([
-        [('📨 Создать рассылку', 'admin:broadcast:create')],
-        [('📋 История рассылок', 'admin:broadcast:history')],
-        [('⬅️ Назад', 'admin:menu')],
-    ]))
+    await render_communications(callback)
 
 
 @router.callback_query(F.data == 'admin:communications')
@@ -858,7 +884,7 @@ async def broadcast_start(callback: CallbackQuery, state: FSMContext) -> None:
     if not await guarded(callback):
         return
     await state.set_state(BroadcastStates.audience)
-    await callback.message.answer('Выберите группу: все, активные, истекающие, без подписки или рефералы')
+    await prompt(callback.message, state, 'Выберите группу: все, активные, истекающие, без подписки или рефералы')
 
 
 @router.callback_query(F.data.in_({'admin:broadcast:history', 'admin:broadcast:stats'}))
@@ -887,6 +913,8 @@ async def broadcast_history(callback: CallbackQuery) -> None:
 
 @router.message(BroadcastStates.audience)
 async def broadcast_audience(message: Message, state: FSMContext) -> None:
+    if not is_admin(message.from_user.id):
+        return
     aliases = {
         "все": "all",
         "активные": "active",
@@ -894,18 +922,23 @@ async def broadcast_audience(message: Message, state: FSMContext) -> None:
         "без подписки": "none",
         "рефералы": "referrals",
     }
-    audience = aliases.get(message.text.strip().lower())
-    if not is_admin(message.from_user.id) or audience is None:
-        await message.answer('Введите: все, активные, истекающие, без подписки или рефералы.')
+    audience = aliases.get((message.text or '').strip().lower())
+    if audience is None:
+        await delete_quietly(message)
+        await temporary_message(message, 'Введите: все, активные, истекающие, без подписки или рефералы.')
         return
+    await delete_prompt(message, state)
     recipients = await get_broadcast_recipients(audience)
     await state.update_data(audience=audience, recipients=recipients)
     await state.set_state(BroadcastStates.message)
-    await message.answer(f'Получателей: {len(recipients)}\nВведите текст рассылки:')
+    await prompt(message, state, f'Получателей: {len(recipients)}\nВведите текст рассылки:')
 
 
 @router.message(BroadcastStates.message)
 async def broadcast_message(message: Message, state: FSMContext) -> None:
+    if not is_admin(message.from_user.id):
+        return
+    await delete_prompt(message, state)
     await state.update_data(message=message.text or '')
     data = await state.get_data()
     await state.set_state(BroadcastStates.confirm)
@@ -947,25 +980,14 @@ async def broadcast_send(callback: CallbackQuery, state: FSMContext, bot: Bot) -
 async def admin_settings(callback: CallbackQuery) -> None:
     if not await guarded(callback):
         return
-    await show(callback, '⚙️ Настройки', kb([[('💳 Тарифы', 'admin:settings:plans'), ('🎁 Реферальная система', 'admin:referrals:settings')], [('🎫 Промокоды', 'admin:promos')], [('👨‍💼 Администраторы', 'admin:settings:admins')], [('⬅️ Назад', 'admin:menu')]]))
+    await show(callback, '🛠 АДМИН-ПАНЕЛЬ', main_menu())
 
 
 @router.callback_query(F.data.startswith('admin:settings:'))
 async def admin_settings_page(callback: CallbackQuery) -> None:
     if not await guarded(callback):
         return
-    section = (callback.data or '').split(':')[-1]
-    if section == 'plans':
-        plans = await get_all_plans()
-        text = '💳 Тарифы из plans\n\n' + '\n'.join(f"{'🟢' if p['is_active'] else '⏸'} {p['code']} · {p['duration_days']} дн. · {money(p['price_kopecks'])} · {p['type']} · {p['device_limit']} уст." for p in plans)
-        markup = kb([[('✏️ ' + p['code'], f"admin:plan:edit:{p['id']}"), ('⏸/▶️', f"admin:plan:toggle:{p['id']}")] for p in plans] + [[('⬅️ Назад', 'admin:settings')]])
-        await show(callback, text[:3900], markup)
-        return
-    elif section == 'admins':
-        text = '👨‍💼 Администраторы\n\nДоступ определяется ADMIN_IDS из окружения. Изменение через UI не добавляется, чтобы не ослаблять текущую защиту.'
-    else:
-        text = f'⚙️ Раздел: {section}\n\nРаздел подготовлен для следующего этапа.'
-    await show(callback, text[:3900], back('admin:settings'))
+    await show(callback, '🛠 АДМИН-ПАНЕЛЬ', main_menu())
 
 
 @router.callback_query(F.data.startswith('admin:plan:toggle:'))
@@ -996,7 +1018,7 @@ async def admin_plan_price(message: Message, state: FSMContext) -> None:
     if not is_admin(message.from_user.id):
         return
     try:
-        price_kopecks = int(round(float(message.text.replace(',', '.')) * 100))
+        price_kopecks = int(round(float((message.text or '').replace(',', '.')) * 100))
     except (ValueError, AttributeError):
         await delete_quietly(message)
         await temporary_message(message, 'Введите положительную цену, например 169.')
@@ -1013,7 +1035,9 @@ async def admin_plan_price(message: Message, state: FSMContext) -> None:
 
 @router.message(PlanStates.duration)
 async def admin_plan_duration(message: Message, state: FSMContext) -> None:
-    if not message.text.isdigit() or int(message.text) <= 0:
+    if not is_admin(message.from_user.id):
+        return
+    if not (message.text or '').isdigit() or int(message.text) <= 0:
         await delete_quietly(message)
         await temporary_message(message, 'Введите положительное количество дней.')
         return
@@ -1025,7 +1049,9 @@ async def admin_plan_duration(message: Message, state: FSMContext) -> None:
 
 @router.message(PlanStates.devices)
 async def admin_plan_devices(message: Message, state: FSMContext) -> None:
-    if not message.text.isdigit() or int(message.text) <= 0:
+    if not is_admin(message.from_user.id):
+        return
+    if not (message.text or '').isdigit() or int(message.text) <= 0:
         await delete_quietly(message)
         await temporary_message(message, 'Введите положительный лимит устройств.')
         return
