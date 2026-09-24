@@ -329,26 +329,6 @@ CREATE TABLE IF NOT EXISTS promo_usages (
     UNIQUE (promo_id, user_id, created_at)
 );
 
-INSERT INTO promo_codes (
-    code,
-    reward_type,
-    reward_value,
-    per_user_limit
-)
-VALUES (
-    'NERONEX',
-    'discount',
-    10,
-    1
-)
-ON CONFLICT (code) DO UPDATE
-SET reward_type = EXCLUDED.reward_type,
-    reward_value = EXCLUDED.reward_value,
-    per_user_limit = EXCLUDED.per_user_limit,
-    is_active = TRUE,
-    starts_at = LEAST(promo_codes.starts_at, EXCLUDED.starts_at),
-    ends_at = NULL;
-
 CREATE TABLE IF NOT EXISTS referral_rewards (
     id BIGSERIAL PRIMARY KEY,
     referrer_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

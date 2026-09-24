@@ -126,9 +126,6 @@ CB_TOPUP_METHOD_PREFIX = "topup:method:"
 CB_TOPUP_METHOD_SBP = f"{CB_TOPUP_METHOD_PREFIX}sbp"
 CB_TOPUP_METHOD_CARD = f"{CB_TOPUP_METHOD_PREFIX}card"
 
-PROMO_CODE = "NERONEX"
-
-
 class PromoStates(StatesGroup):
     waiting_code = State()
 
