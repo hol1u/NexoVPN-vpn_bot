@@ -814,6 +814,43 @@ async def delete_promo_code(promo_id: int) -> None:
         await connection.execute("DELETE FROM promo_codes WHERE id = $1", promo_id)
 
 
+async def update_promo_code(
+    promo_id: int,
+    code: str,
+    reward_type: str,
+    reward_value: int,
+    total_limit: int | None,
+    per_user_limit: int,
+    starts_at: str,
+    ends_at: str | None,
+    plan_code: str | None,
+) -> None:
+    async with _get_pool().acquire() as connection:
+        await connection.execute(
+            """
+            UPDATE promo_codes
+            SET code = $1,
+                reward_type = $2,
+                reward_value = $3,
+                total_limit = $4,
+                per_user_limit = $5,
+                starts_at = ($6::TEXT)::timestamptz,
+                ends_at = NULLIF($7::TEXT, '')::timestamptz,
+                plan_id = (SELECT id FROM plans WHERE code = NULLIF($8::TEXT, ''))
+            WHERE id = $9
+            """,
+            code.upper(),
+            reward_type,
+            reward_value,
+            total_limit,
+            per_user_limit,
+            starts_at,
+            ends_at or "",
+            plan_code or "",
+            promo_id,
+        )
+
+
 async def get_subscription_list(mode: str = "all") -> list[dict[str, Any]]:
     conditions = {
         "active": "s.status = 'active' AND s.expires_at > NOW()",
