@@ -188,6 +188,20 @@ def parse_admin_datetime(value: str) -> str:
     return parsed.astimezone(timezone.utc).isoformat()
 
 
+def parse_reward_value(value: str, reward_type: str) -> int | None:
+    text = value.strip().lower()
+    if reward_type == "discount":
+        if text.endswith("%"):
+            text = text[:-1].strip()
+    else:
+        for suffix in ("дней", "дня", "день"):
+            if text.endswith(suffix):
+                text = text[:-len(suffix)].strip()
+                break
+    if not text.isdigit() or int(text) <= 0:
+        return None
+    return int(text)
+
 async def delete_quietly(message: Message) -> None:
     try:
         await message.delete()
@@ -536,17 +550,21 @@ async def promo_type(message: Message, state: FSMContext) -> None:
     await delete_prompt(message, state)
     await state.update_data(reward_type='discount' if value == 'скидка' else 'free_days')
     await state.set_state(PromoStates.reward_value)
-    await prompt(message, state, 'Введите размер награды числом: процент или количество дней.')
+    reward_hint = 'размер скидки, например 10%' if value == 'скидка' else 'количество дней, например 7 дней'
+    await prompt(message, state, f'Введите {reward_hint}:')
 
 
 @router.message(PromoStates.reward_value)
 async def promo_value(message: Message, state: FSMContext) -> None:
-    if not message.text.isdigit() or int(message.text) <= 0:
+    data = await state.get_data()
+    reward_value = parse_reward_value(message.text or '', data['reward_type'])
+    if reward_value is None:
         await delete_quietly(message)
-        await temporary_message(message, 'Нужно положительное целое число.')
+        hint = '10%' if data['reward_type'] == 'discount' else '7 дней'
+        await temporary_message(message, f'Введите положительное значение, например {hint}.')
         return
     await delete_prompt(message, state)
-    await state.update_data(reward_value=int(message.text))
+    await state.update_data(reward_value=reward_value)
     await state.set_state(PromoStates.total_limit)
     await prompt(message, state, 'Общий лимит использований, 0 если без лимита:')
 
@@ -654,19 +672,23 @@ async def promo_edit_type(message: Message, state: FSMContext) -> None:
     await delete_prompt(message, state)
     await state.update_data(reward_type='discount' if value == 'скидка' else 'free_days')
     await state.set_state(PromoEditStates.reward_value)
-    await prompt(message, state, 'Введите размер награды числом: процент или количество дней.')
+    reward_hint = 'размер скидки, например 10%' if value == 'скидка' else 'количество дней, например 7 дней'
+    await prompt(message, state, f'Введите {reward_hint}:')
 
 
 @router.message(PromoEditStates.reward_value)
 async def promo_edit_value(message: Message, state: FSMContext) -> None:
     if not is_admin(message.from_user.id):
         return
-    if not message.text.isdigit() or int(message.text) <= 0:
+    data = await state.get_data()
+    reward_value = parse_reward_value(message.text or '', data['reward_type'])
+    if reward_value is None:
         await delete_quietly(message)
-        await temporary_message(message, 'Введите положительное целое число.')
+        hint = '10%' if data['reward_type'] == 'discount' else '7 дней'
+        await temporary_message(message, f'Введите положительное значение, например {hint}.')
         return
     await delete_prompt(message, state)
-    await state.update_data(reward_value=int(message.text))
+    await state.update_data(reward_value=reward_value)
     await state.set_state(PromoEditStates.total_limit)
     await prompt(message, state, 'Общий лимит использований, 0 если без лимита:')
 
