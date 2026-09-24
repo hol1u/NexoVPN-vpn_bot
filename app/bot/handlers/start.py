@@ -811,20 +811,26 @@ def build_plans_menu(
     prefix: str,
     back_callback: str,
     discount_percent: int = 0,
+    promo_plan_id: int | None = None,
 ) -> InlineKeyboardMarkup:
 
     buttons = []
 
     for plan in plans:
         months = plan_months(plan)
+        plan_discount = (
+            discount_percent
+            if promo_plan_id is None or plan["id"] == promo_plan_id
+            else 0
+        )
 
         buttons.append(
             InlineKeyboardButton(
                 text=(
                     f"{plan_emoji(months)} "
                     f"{months_label(months)} — "
-                    f"{format_price(discounted_price(plan['price_kopecks'], discount_percent))}"
-                    + (f" (-{discount_percent}%)" if discount_percent else "")
+                    f"{format_price(discounted_price(plan['price_kopecks'], plan_discount))}"
+                    + (f" (-{plan_discount}%)" if plan_discount else "")
                 ),
                 callback_data=(
                     f"{prefix}{plan['code']}"
@@ -1677,6 +1683,11 @@ async def show_device_plans(
             and promo["promo_reward_type"] == "discount"
             else 0
         )
+        promo_plan_id = (
+            int(promo["promo_plan_id"])
+            if promo is not None and promo["promo_plan_id"] is not None
+            else None
+        )
 
     except Exception:
         logger.exception(
@@ -1704,6 +1715,18 @@ async def show_device_plans(
         )
         return
 
+    promo = await get_user_promo(callback.from_user.id)
+    discount_percent = (
+        int(promo["promo_reward_value"])
+        if promo is not None and promo["promo_reward_type"] == "discount"
+        else 0
+    )
+    promo_plan_id = (
+        int(promo["promo_plan_id"])
+        if promo is not None and promo["promo_plan_id"] is not None
+        else None
+    )
+
     await edit_menu(
         callback,
         build_purchase_plans_text(
@@ -1717,6 +1740,7 @@ async def show_device_plans(
             CB_PLAN_PREFIX,
             CB_BACK,
             discount_percent=discount_percent,
+            promo_plan_id=promo_plan_id,
         ),
     )
 
@@ -1796,6 +1820,18 @@ async def family_handler(
         )
         return
 
+    promo = await get_user_promo(callback.from_user.id)
+    discount_percent = (
+        int(promo["promo_reward_value"])
+        if promo is not None and promo["promo_reward_type"] == "discount"
+        else 0
+    )
+    promo_plan_id = (
+        int(promo["promo_plan_id"])
+        if promo is not None and promo["promo_plan_id"] is not None
+        else None
+    )
+
     await edit_menu(
         callback,
         build_family_plans_text(
@@ -1805,6 +1841,8 @@ async def family_handler(
             plans,
             CB_PLAN_PREFIX,
             CB_BACK,
+            discount_percent=discount_percent,
+            promo_plan_id=promo_plan_id,
         ),
     )
 
