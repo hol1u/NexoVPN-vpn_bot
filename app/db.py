@@ -777,9 +777,9 @@ async def get_promo_summary() -> dict[str, int]:
 
 async def get_promo_codes(mode: str = "active") -> list[dict[str, Any]]:
     conditions = {
-        "active": "is_active AND (ends_at IS NULL OR ends_at > NOW())",
-        "paused": "NOT is_active",
-        "expired": "ends_at IS NOT NULL AND ends_at <= NOW()",
+        "active": "p.is_active AND (p.ends_at IS NULL OR p.ends_at > NOW())",
+        "paused": "NOT p.is_active",
+        "expired": "p.ends_at IS NOT NULL AND p.ends_at <= NOW()",
     }
     condition = conditions.get(mode, "TRUE")
     async with _get_pool().acquire() as connection:
@@ -787,12 +787,11 @@ async def get_promo_codes(mode: str = "active") -> list[dict[str, Any]]:
             f"""
             SELECT p.id, p.code, p.reward_type, p.reward_value,
                    p.total_limit, p.per_user_limit, p.starts_at, p.ends_at,
-                   p.is_active, pl.code AS plan_code, COUNT(u.id) AS uses
+                     p.is_active, pl.code AS plan_code,
+                     (SELECT COUNT(*) FROM promo_usages u WHERE u.promo_id = p.id) AS uses
             FROM promo_codes p
             LEFT JOIN plans pl ON pl.id = p.plan_id
-            LEFT JOIN promo_usages u ON u.promo_id = p.id
             WHERE {condition}
-            GROUP BY p.id, pl.code
             ORDER BY p.created_at DESC
             LIMIT 30
             """
