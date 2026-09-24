@@ -113,6 +113,7 @@ CB_PROMO = "menu:promo"
 CB_DOCUMENTS = "menu:documents"
 CB_BOT_PRIVACY = "documents:bot-privacy"
 CB_BACK = "menu:back"
+CB_MENU = "menu:main"
 CB_CANCEL = "balance:cancel"
 CB_ADMIN_STATS = "admin:stats"
 
@@ -888,6 +889,65 @@ def build_plan_card_menu(
     )
 
 
+async def route_to_previous_screen(
+    callback: CallbackQuery,
+    state: FSMContext,
+    target: str | None,
+) -> None:
+    if target == CB_SUBSCRIPTION:
+        await subscription_handler(callback, state)
+        return
+    if target == CB_CONNECT:
+        await connect_handler(callback, state)
+        return
+    if target == CB_DEVICE_3:
+        await device_3_handler(callback, state)
+        return
+    if target == CB_DEVICE_6:
+        await device_6_handler(callback, state)
+        return
+    if target == CB_RENEW:
+        await renew_handler(callback, state)
+        return
+    if target == CB_BALANCE:
+        await balance_handler(callback, state)
+        return
+    if target == CB_HELP:
+        await help_handler(callback, state)
+        return
+    if target == CB_INVITE:
+        await invite_handler(callback, state)
+        return
+    if target == CB_DOCUMENTS:
+        await documents_handler(callback, state)
+        return
+    if target == CB_FAMILY:
+        await family_handler(callback, state)
+        return
+    await menu_back_handler(callback, state)
+
+
+async def get_effective_promo_state(
+    telegram_id: int,
+) -> tuple[int, int | None]:
+    promo = await get_user_promo(telegram_id)
+
+    if promo is None:
+        return 0, None
+
+    if promo.get("promo_reward_type") != "discount":
+        return 0, None
+
+    discount_percent = int(promo.get("promo_reward_value") or 0)
+    promo_plan_id = (
+        int(promo["promo_plan_id"])
+        if promo.get("promo_plan_id") is not None
+        else None
+    )
+
+    return max(0, discount_percent), promo_plan_id
+
+
 def build_documents_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -912,7 +972,7 @@ def build_documents_menu() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(
                     text="◀️ Назад в меню",
-                    callback_data=CB_BACK,
+                    callback_data=CB_MENU,
                     style="danger",
                 )
             ],
@@ -1148,7 +1208,10 @@ async def check_subscription_handler(
 )
 async def invite_handler(
     callback: CallbackQuery,
+    state: FSMContext,
 ) -> None:
+
+    await state.update_data(back_target=CB_MENU)
 
     try:
         referral_code = (
@@ -1228,9 +1291,11 @@ async def invite_handler(
 )
 async def help_handler(
     callback: CallbackQuery,
+    state: FSMContext,
 ) -> None:
 
     await callback.answer()
+    await state.update_data(back_target=CB_MENU)
 
     await edit_menu(
         callback,
@@ -1249,6 +1314,7 @@ async def promo_handler(
 
     await callback.answer()
     await state.set_state(PromoStates.waiting_code)
+    await state.update_data(prompt_message_id=callback.message.message_id)
 
     await edit_menu(
         callback,
@@ -1264,10 +1330,23 @@ async def promo_code_handler(
     state: FSMContext,
 ) -> None:
     promo_code = (message.text or "").strip().upper()
+    data = await state.get_data()
+    prompt_message_id = data.get("prompt_message_id")
 
     try:
         if await is_promo_activated(message.from_user.id):
             await state.clear()
+            if prompt_message_id is not None:
+                try:
+                    await message.bot.edit_message_text(
+                        "❌ Промокод уже был использован.",
+                        chat_id=message.chat.id,
+                        message_id=prompt_message_id,
+                        reply_markup=build_plan_card_menu(CB_BACK),
+                    )
+                    return
+                except TelegramBadRequest:
+                    pass
             await message.answer("Промокод уже был использован.")
             return
 
@@ -1280,9 +1359,22 @@ async def promo_code_handler(
             "Не удалось активировать промокод telegram_id=%s",
             message.from_user.id,
         )
+        if prompt_message_id is not None:
+            try:
+                await message.bot.edit_message_text(
+                    "Не удалось активировать промокод. Попробуйте позже.",
+                    chat_id=message.chat.id,
+                    message_id=prompt_message_id,
+                    reply_markup=build_plan_card_menu(CB_BACK),
+                )
+                await state.clear()
+                return
+            except TelegramBadRequest:
+                pass
         await message.answer(
             "Не удалось активировать промокод. Попробуйте позже."
         )
+        await state.clear()
         return
 
     await state.clear()
@@ -1299,22 +1391,41 @@ async def promo_code_handler(
                 "бесплатных дней подписки."
             )
 
-        confirmation = await message.answer(
+        result_text = (
             "🎁 Промокод успешно активирован!\n\n"
             f"{reward_text}"
         )
-        await asyncio.sleep(2)
-        try:
-            await confirmation.delete()
-        except TelegramBadRequest:
-            logger.info(
-                "Не удалось удалить сообщение об активации промокода"
-            )
+        if prompt_message_id is not None:
+            try:
+                await message.bot.edit_message_text(
+                    result_text,
+                    chat_id=message.chat.id,
+                    message_id=prompt_message_id,
+                    reply_markup=build_plan_card_menu(CB_BACK),
+                )
+                return
+            except TelegramBadRequest:
+                pass
+
+        await message.answer(result_text)
         return
 
-    await message.answer(
+    invalid_text = (
         "❌ Промокод недействителен, истёк, закончился или уже использован."
     )
+    if prompt_message_id is not None:
+        try:
+            await message.bot.edit_message_text(
+                invalid_text,
+                chat_id=message.chat.id,
+                message_id=prompt_message_id,
+                reply_markup=build_plan_card_menu(CB_BACK),
+            )
+            return
+        except TelegramBadRequest:
+            pass
+
+    await message.answer(invalid_text)
 
 
 @router.callback_query(
@@ -1322,9 +1433,11 @@ async def promo_code_handler(
 )
 async def documents_handler(
     callback: CallbackQuery,
+    state: FSMContext,
 ) -> None:
 
     await callback.answer()
+    await state.update_data(back_target=CB_MENU)
 
     await edit_menu(
         callback,
@@ -1369,6 +1482,7 @@ async def bot_privacy_handler(
 )
 async def subscription_handler(
     callback: CallbackQuery,
+    state: FSMContext,
 ) -> None:
 
     try:
@@ -1387,6 +1501,7 @@ async def subscription_handler(
         return
 
     await callback.answer()
+    await state.update_data(back_target=CB_MENU)
 
     if subscription is None:
         text = "📱 Моя подписка\n\nСтатус: Нет активной подписки"
@@ -1416,6 +1531,7 @@ async def subscription_handler(
 )
 async def balance_handler(
     callback: CallbackQuery,
+    state: FSMContext,
 ) -> None:
 
     try:
@@ -1440,6 +1556,7 @@ async def balance_handler(
         return
 
     await callback.answer()
+    await state.update_data(back_target=CB_MENU)
 
     if callback.message is None:
         return
@@ -1492,6 +1609,9 @@ async def topup_handler(
     )
 
 
+MAX_TOPUP_RUB = Decimal("1000000")
+
+
 @router.message(
     TopupStates.waiting_amount
 )
@@ -1506,35 +1626,60 @@ async def topup_amount_handler(
         .replace(",", ".")
     )
 
+    data = await state.get_data()
+    prompt_message_id = data.get(
+        "topup_prompt_message_id"
+    )
+
     try:
         amount_rub = Decimal(raw_amount)
         amount_kopecks_decimal = amount_rub * 100
         amount_kopecks = int(amount_kopecks_decimal)
     except (InvalidOperation, OverflowError, ValueError):
-        await message.answer(
+        error_text = (
             "Не удалось распознать сумму. "
             "Введите сумму в рублях с точностью до копеек, "
             "например: 100 или 100,50"
         )
+        if prompt_message_id is not None:
+            try:
+                await message.bot.edit_message_text(
+                    error_text,
+                    chat_id=message.chat.id,
+                    message_id=prompt_message_id,
+                    reply_markup=build_topup_cancel_menu(),
+                )
+                return
+            except TelegramBadRequest:
+                pass
+        await message.answer(error_text)
         return
 
     if (
         amount_rub is None
         or not amount_rub.is_finite()
         or amount_rub <= 0
+        or amount_rub > MAX_TOPUP_RUB
         or amount_kopecks_decimal != amount_kopecks
     ):
-        await message.answer(
+        error_text = (
             "Не удалось распознать сумму. "
             "Введите сумму в рублях с точностью до копеек, "
-            "например: 100 или 100,50"
+            "например: 100 или 100,50; максимум — 1 000 000 ₽"
         )
+        if prompt_message_id is not None:
+            try:
+                await message.bot.edit_message_text(
+                    error_text,
+                    chat_id=message.chat.id,
+                    message_id=prompt_message_id,
+                    reply_markup=build_topup_cancel_menu(),
+                )
+                return
+            except TelegramBadRequest:
+                pass
+        await message.answer(error_text)
         return
-
-    data = await state.get_data()
-    prompt_message_id = data.get(
-        "topup_prompt_message_id"
-    )
 
     await state.set_state(
         TopupStates.choosing_method
@@ -1581,15 +1726,7 @@ async def cancel_topup_handler(
     if callback.message is None:
         return
 
-    await callback.message.edit_text(
-        WELCOME_TEXT,
-        reply_markup=build_main_menu(
-            is_admin=(
-                callback.from_user.id
-                in ADMIN_IDS
-            )
-        ),
-    )
+    await balance_handler(callback, state)
 
 
 @router.callback_query(
@@ -1613,9 +1750,9 @@ async def topup_method_handler(
 # ============================================================
 
 @router.callback_query(
-    F.data == CB_BACK
+    F.data == CB_MENU
 )
-async def back_handler(
+async def menu_back_handler(
     callback: CallbackQuery,
     state: FSMContext,
 ) -> None:
@@ -1637,6 +1774,22 @@ async def back_handler(
     )
 
 
+@router.callback_query(
+    F.data == CB_BACK
+)
+async def back_handler(
+    callback: CallbackQuery,
+    state: FSMContext,
+) -> None:
+
+    await callback.answer()
+    data = await state.get_data()
+    target = data.get("back_target")
+    if target is None:
+        target = CB_MENU
+    await route_to_previous_screen(callback, state, target)
+
+
 # ============================================================
 # CONNECT
 # ============================================================
@@ -1646,9 +1799,11 @@ async def back_handler(
 )
 async def connect_handler(
     callback: CallbackQuery,
+    state: FSMContext,
 ) -> None:
 
     await safe_callback_answer(callback)
+    await state.update_data(back_target=CB_MENU)
 
     await edit_menu(
         callback,
@@ -1662,6 +1817,7 @@ async def connect_handler(
 async def show_device_plans(
     callback: CallbackQuery,
     device_limit: int,
+    state: FSMContext,
 ) -> None:
 
     try:
@@ -1671,19 +1827,8 @@ async def show_device_plans(
         balance_kopecks = await get_user_balance(
             callback.from_user.id
         )
-        promo = await get_user_promo(
+        discount_percent, promo_plan_id = await get_effective_promo_state(
             callback.from_user.id,
-        )
-        discount_percent = (
-            int(promo["promo_reward_value"])
-            if promo is not None
-            and promo["promo_reward_type"] == "discount"
-            else 0
-        )
-        promo_plan_id = (
-            int(promo["promo_plan_id"])
-            if promo is not None and promo["promo_plan_id"] is not None
-            else None
         )
 
     except Exception:
@@ -1700,6 +1845,7 @@ async def show_device_plans(
         return
 
     await callback.answer()
+    await state.update_data(back_target=CB_CONNECT)
 
     if not plans:
         await edit_menu(
@@ -1712,18 +1858,6 @@ async def show_device_plans(
         )
         return
 
-    promo = await get_user_promo(callback.from_user.id)
-    discount_percent = (
-        int(promo["promo_reward_value"])
-        if promo is not None and promo["promo_reward_type"] == "discount"
-        else 0
-    )
-    promo_plan_id = (
-        int(promo["promo_plan_id"])
-        if promo is not None and promo["promo_plan_id"] is not None
-        else None
-    )
-
     await edit_menu(
         callback,
         build_purchase_plans_text(
@@ -1735,7 +1869,7 @@ async def show_device_plans(
         build_plans_menu(
             plans,
             CB_PLAN_PREFIX,
-            CB_BACK,
+            CB_CONNECT,
             discount_percent=discount_percent,
             promo_plan_id=promo_plan_id,
         ),
@@ -1747,8 +1881,9 @@ async def show_device_plans(
 )
 async def device_3_handler(
     callback: CallbackQuery,
+    state: FSMContext,
 ) -> None:
-    await show_device_plans(callback, 3)
+    await show_device_plans(callback, 3, state)
 
 
 @router.callback_query(
@@ -1756,8 +1891,9 @@ async def device_3_handler(
 )
 async def device_6_handler(
     callback: CallbackQuery,
+    state: FSMContext,
 ) -> None:
-    await show_device_plans(callback, 6)
+    await show_device_plans(callback, 6, state)
 
 
 @router.callback_query(
@@ -1785,6 +1921,7 @@ async def trial_handler(
 )
 async def family_handler(
     callback: CallbackQuery,
+    state: FSMContext,
 ) -> None:
 
     try:
@@ -1805,6 +1942,7 @@ async def family_handler(
         return
 
     await callback.answer()
+    await state.update_data(back_target=CB_MENU)
 
     if not plans:
         await edit_menu(
@@ -1812,21 +1950,13 @@ async def family_handler(
             "Семейные тарифы временно "
             "недоступны. Попробуйте позже.",
             build_plan_card_menu(
-                CB_BACK
+                CB_MENU
             ),
         )
         return
 
-    promo = await get_user_promo(callback.from_user.id)
-    discount_percent = (
-        int(promo["promo_reward_value"])
-        if promo is not None and promo["promo_reward_type"] == "discount"
-        else 0
-    )
-    promo_plan_id = (
-        int(promo["promo_plan_id"])
-        if promo is not None and promo["promo_plan_id"] is not None
-        else None
+    discount_percent, promo_plan_id = await get_effective_promo_state(
+        callback.from_user.id,
     )
 
     await edit_menu(
@@ -1837,7 +1967,7 @@ async def family_handler(
         build_plans_menu(
             plans,
             CB_PLAN_PREFIX,
-            CB_BACK,
+            CB_CONNECT,
             discount_percent=discount_percent,
             promo_plan_id=promo_plan_id,
         ),
@@ -1853,6 +1983,7 @@ async def family_handler(
 )
 async def renew_handler(
     callback: CallbackQuery,
+    state: FSMContext,
 ) -> None:
 
     if not await has_active_subscription(
@@ -1886,6 +2017,7 @@ async def renew_handler(
         return
 
     await callback.answer()
+    await state.update_data(back_target=CB_SUBSCRIPTION)
 
     if not plans:
         await edit_menu(
@@ -1893,7 +2025,7 @@ async def renew_handler(
             "Тарифы временно недоступны. "
             "Попробуйте позже.",
             build_plan_card_menu(
-                CB_BACK
+                CB_SUBSCRIPTION
             ),
         )
         return
@@ -1906,7 +2038,7 @@ async def renew_handler(
         build_plans_menu(
             plans,
             CB_RENEW_PLAN_PREFIX,
-            CB_BACK,
+            CB_SUBSCRIPTION,
         ),
     )
 
@@ -1919,6 +2051,7 @@ async def show_plan_card(
     callback: CallbackQuery,
     code: str,
     renewal: bool,
+    state: FSMContext,
 ) -> None:
 
     try:
@@ -1979,12 +2112,16 @@ async def show_plan_card(
 
     if renewal:
         back_callback = CB_RENEW
-
     elif plan["type"] == "family":
         back_callback = CB_FAMILY
-
     else:
-        back_callback = CB_CONNECT
+        back_callback = (
+            CB_DEVICE_3
+            if int(plan["device_limit"]) == 3
+            else CB_DEVICE_6
+        )
+
+    await state.update_data(back_target=back_callback)
 
     await edit_menu(
         callback,
@@ -2004,6 +2141,7 @@ async def show_plan_card(
 )
 async def plan_selected_handler(
     callback: CallbackQuery,
+    state: FSMContext,
 ) -> None:
 
     code = (
@@ -2016,6 +2154,7 @@ async def plan_selected_handler(
         callback,
         code=code,
         renewal=False,
+        state=state,
     )
 
 
@@ -2026,6 +2165,7 @@ async def plan_selected_handler(
 )
 async def renew_plan_selected_handler(
     callback: CallbackQuery,
+    state: FSMContext,
 ) -> None:
 
     code = (
@@ -2038,6 +2178,7 @@ async def renew_plan_selected_handler(
         callback,
         code=code,
         renewal=True,
+        state=state,
     )
 
 
