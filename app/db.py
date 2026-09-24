@@ -334,7 +334,7 @@ async def activate_promo_code(
                   SELECT id, reward_type, reward_value, plan_id,
                       total_limit, per_user_limit
                 FROM promo_codes
-                WHERE code = $1
+                WHERE UPPER(BTRIM(code)) = $1
                   AND is_active = TRUE
                   AND starts_at <= NOW()
                   AND (ends_at IS NULL OR ends_at > NOW())
