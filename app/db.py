@@ -363,7 +363,7 @@ async def activate_promo_code(
             else:
                 return None
 
-            updated = await connection.fetchval(
+            updated = await connection.fetchrow(
                 """
                 UPDATE users
                 SET promo_activated = TRUE,
